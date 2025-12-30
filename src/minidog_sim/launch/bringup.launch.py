@@ -17,6 +17,7 @@ def generate_launch_description():
     enable_nav2 = LaunchConfiguration("enable_nav2")
     enable_mux = LaunchConfiguration("enable_mux")
     enable_explore = LaunchConfiguration("enable_explore")
+    enable_rqt = LaunchConfiguration("enable_rqt")
     odom_source = LaunchConfiguration("odom_source")
     ros_localhost_only = LaunchConfiguration("ros_localhost_only")
     rmw_implementation = LaunchConfiguration("rmw_implementation")
@@ -69,6 +70,17 @@ def generate_launch_description():
         launch_arguments={"use_sim_time": use_sim_time}.items(),
         condition=IfCondition(enable_explore),
     )
+    rqt = ExecuteProcess(
+        cmd=[
+            "bash",
+            "-lc",
+            # Fail-safe: don't crash bringup if rqt isn't installed.
+            # --force-discover helps on some systems where the daemon/graph can be flaky.
+            "command -v rqt >/dev/null 2>&1 && rqt --force-discover || true",
+        ],
+        output="screen",
+        condition=IfCondition(enable_rqt),
+    )
     scan_odom = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "scan_odom.launch.py"])),
         launch_arguments={
@@ -107,8 +119,13 @@ def generate_launch_description():
             "pkill -f '[s]lam_toolbox' || true; "
             "pkill -f '[n]av2_' || true; "
             "pkill -f '[s]tatic_transform_publisher' || true; "
+            # rf2o process name varies (rf2o_laser_odometry_node / rf2o_laser_odometry)
+            "pkill -f '[r]f2o_laser_odometry_node' || true; "
             "pkill -f '[r]f2o_laser_odometry' || true; "
             "pkill -f '[l]aser_scan_matcher' || true; "
+            "pkill -f '[c]md_vel_mux' || true; "
+            "pkill -f '[f]rontier_explore' || true; "
+            "pkill -f '[r]qt' || true; "
             "pkill -f '[r]os2 daemon' || true; "
             # Clean up FastDDS SHM artifacts which can make new ROS2 processes hang on WSL2.
             "rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* 2>/dev/null || true",
@@ -119,7 +136,7 @@ def generate_launch_description():
     start_everything_after_cleanup = RegisterEventHandler(
         OnProcessExit(
             target_action=cleanup,
-            on_exit=[sim, bridge, scan_odom, scan_matcher_odom, mux, rviz, slam, nav2, explore],
+            on_exit=[sim, bridge, scan_odom, scan_matcher_odom, mux, rviz, slam, nav2, explore, rqt],
         )
     )
 
@@ -131,6 +148,7 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_nav2", default_value="false"),
             DeclareLaunchArgument("enable_mux", default_value="true"),
             DeclareLaunchArgument("enable_explore", default_value="false"),
+            DeclareLaunchArgument("enable_rqt", default_value="false"),
             DeclareLaunchArgument(
                 # wheel: odom->base comes from Gazebo TF (wheel-integrated).
                 # scan:  odom->base comes from scan matching (rf2o), wheel odom is still available as /wheel_odom.

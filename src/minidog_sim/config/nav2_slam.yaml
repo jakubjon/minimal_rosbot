@@ -136,8 +136,10 @@ local_costmap:
       update_frequency: 10.0
       publish_frequency: 5.0
       rolling_window: true
-      width: 6.0
-      height: 6.0
+      # NOTE: Some Nav2 builds declare these as integer parameters. Keep them as ints to avoid
+      # InvalidParameterTypeException on startup.
+      width: 6
+      height: 6
       resolution: 0.05
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:

@@ -71,7 +71,13 @@ What this means (TF ownership):
 
 #### Build rf2o (vendored)
 
-rf2o is vendored under `src/third_party/rf2o_laser_odometry` and built as part of the workspace:
+rf2o is included as a git submodule under `src/third_party/rf2o_laser_odometry` and built as part of the workspace.
+
+After cloning this repo, fetch submodules:
+
+```bash
+git submodule update --init --recursive
+```
 
 ```bash
 cd /home/jjon/ROBOPES/minimal

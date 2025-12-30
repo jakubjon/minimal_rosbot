@@ -36,6 +36,8 @@ def generate_launch_description():
             name="bt_navigator",
             output="screen",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
+            # Ensure Nav2 never publishes directly to /cmd_vel (mux owns /cmd_vel).
+            remappings=[("/cmd_vel", "/cmd_vel_nav")],
         ),
         Node(
             package="nav2_behaviors",
@@ -43,6 +45,8 @@ def generate_launch_description():
             name="behavior_server",
             output="screen",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
+            # Recovery behaviors can publish cmd_vel; keep them on /cmd_vel_nav.
+            remappings=[("/cmd_vel", "/cmd_vel_nav")],
         ),
         Node(
             package="nav2_waypoint_follower",
@@ -50,6 +54,7 @@ def generate_launch_description():
             name="waypoint_follower",
             output="screen",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
+            remappings=[("/cmd_vel", "/cmd_vel_nav")],
         ),
         Node(
             package="nav2_velocity_smoother",

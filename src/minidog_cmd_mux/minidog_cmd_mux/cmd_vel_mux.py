@@ -14,6 +14,9 @@ class CmdVelMux(Node):
         self.declare_parameter("output_topic", "/cmd_vel")
         self.declare_parameter("enable_topic", "/autonomy_enabled")
         self.declare_parameter("auto_timeout_sec", 0.5)
+        self.declare_parameter("manual_override", True)
+        self.declare_parameter("manual_override_epsilon", 1e-3)
+        self.declare_parameter("manual_override_hold_sec", 0.5)
 
         manual_topic = self.get_parameter("manual_topic").get_parameter_value().string_value
         auto_topic = self.get_parameter("auto_topic").get_parameter_value().string_value
@@ -22,10 +25,21 @@ class CmdVelMux(Node):
         self.auto_timeout_sec = (
             self.get_parameter("auto_timeout_sec").get_parameter_value().double_value
         )
+        self.manual_override = (
+            self.get_parameter("manual_override").get_parameter_value().bool_value
+        )
+        self.manual_override_epsilon = (
+            self.get_parameter("manual_override_epsilon").get_parameter_value().double_value
+        )
+        self.manual_override_hold_sec = (
+            self.get_parameter("manual_override_hold_sec").get_parameter_value().double_value
+        )
 
         self.autonomy_enabled = False
         self.last_auto_msg_time = None
         self.last_auto_cmd = Twist()
+        self.last_manual_msg_time = None
+        self.last_manual_mag = 0.0
 
         self.pub = self.create_publisher(Twist, output_topic, 10)
 
@@ -44,23 +58,28 @@ class CmdVelMux(Node):
         self.last_auto_cmd = msg
         self.last_auto_msg_time = self.get_clock().now()
         if self.autonomy_enabled:
+            if self.manual_override and (self.last_manual_msg_time is not None):
+                dt = (self.get_clock().now() - self.last_manual_msg_time).nanoseconds / 1e9
+                if (dt < self.manual_override_hold_sec) and (
+                    self.last_manual_mag > self.manual_override_epsilon
+                ):
+                    # Manual override is active; ignore autonomous cmd_vel.
+                    return
             self.pub.publish(msg)
 
     def _on_manual(self, msg: Twist):
+        self.last_manual_msg_time = self.get_clock().now()
+        self.last_manual_mag = abs(msg.linear.x) + abs(msg.linear.y) + abs(msg.angular.z)
+
+        # Manual mode: always forward.
         if not self.autonomy_enabled:
             self.pub.publish(msg)
             return
 
-        # Autonomy enabled: allow manual override by publishing zero auto if auto timed out.
-        if self.last_auto_msg_time is None:
-            self.pub.publish(Twist())
+        # Autonomy mode: allow manual override (e.g. bootstrap mapping / safety).
+        if self.manual_override and (self.last_manual_mag > self.manual_override_epsilon):
+            self.pub.publish(msg)
             return
-
-        age = (self.get_clock().now() - self.last_auto_msg_time).nanoseconds / 1e9
-        if age > self.auto_timeout_sec:
-            self.pub.publish(Twist())
-        else:
-            self.pub.publish(self.last_auto_cmd)
 
 
 def main():

@@ -42,8 +42,11 @@ class FrontierExplorer(Node):
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("enable_topic", "/autonomy_enabled")
         self.declare_parameter("goal_frame", "map")
-        self.declare_parameter("min_frontier_cells", 30)
+        # Keep low so exploration can start early in small maps.
+        self.declare_parameter("min_frontier_cells", 5)
         self.declare_parameter("goal_cooldown_sec", 5.0)
+        # Keep goals away from the map boundary to avoid Nav2 worldToMap() edge cases.
+        self.declare_parameter("goal_margin_cells", 10)
 
         map_topic = self.get_parameter("map_topic").get_parameter_value().string_value
         enable_topic = self.get_parameter("enable_topic").get_parameter_value().string_value
@@ -53,6 +56,9 @@ class FrontierExplorer(Node):
         )
         self.goal_cooldown_sec = (
             self.get_parameter("goal_cooldown_sec").get_parameter_value().double_value
+        )
+        self.goal_margin_cells = (
+            self.get_parameter("goal_margin_cells").get_parameter_value().integer_value
         )
 
         self.enabled = False
@@ -112,6 +118,24 @@ class FrontierExplorer(Node):
         wy = self.meta.origin_y + (y + 0.5) * self.meta.resolution
         return wx, wy
 
+    def _world_to_cell(self, wx: float, wy: float) -> Tuple[int, int]:
+        assert self.meta is not None
+        cx = int(math.floor((wx - self.meta.origin_x) / self.meta.resolution))
+        cy = int(math.floor((wy - self.meta.origin_y) / self.meta.resolution))
+        return cx, cy
+
+    def _clamp_goal_to_map(self, wx: float, wy: float) -> Tuple[float, float]:
+        """
+        Clamp the goal inside the current OccupancyGrid bounds.
+        This avoids Nav2 planner worldToMap() failures when the chosen frontier lies on the border.
+        """
+        assert self.meta is not None
+        cx, cy = self._world_to_cell(wx, wy)
+        m = max(0, int(self.goal_margin_cells))
+        cx = max(m, min(self.meta.width - 1 - m, cx))
+        cy = max(m, min(self.meta.height - 1 - m, cy))
+        return self._cell_to_world(cx, cy)
+
     def _pick_goal(self) -> Optional[Tuple[float, float]]:
         if self.map is None or self.meta is None:
             return None
@@ -128,6 +152,16 @@ class FrontierExplorer(Node):
         if len(frontier_cells) < self.min_frontier_cells:
             return None
 
+        # Prefer frontiers away from the map boundary.
+        m = max(0, int(self.goal_margin_cells))
+        safe = [
+            (x, y)
+            for (x, y) in frontier_cells
+            if (m <= x < self.meta.width - m) and (m <= y < self.meta.height - m)
+        ]
+        if safe:
+            frontier_cells = safe
+
         # Choose the farthest from map origin (simple, deterministic)
         best = None
         best_d2 = -1.0
@@ -138,7 +172,9 @@ class FrontierExplorer(Node):
                 best_d2 = d2
                 best = (wx, wy)
 
-        return best
+        if best is None:
+            return None
+        return self._clamp_goal_to_map(best[0], best[1])
 
     def _tick(self):
         if not self.enabled:
