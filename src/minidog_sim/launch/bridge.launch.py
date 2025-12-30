@@ -9,11 +9,13 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     world_name = LaunchConfiguration("world_name")
     bridge_tf = LaunchConfiguration("bridge_tf")
+    quiet_terminal = LaunchConfiguration("quiet_terminal")
+    log_level = LaunchConfiguration("log_level")
 
     bridge_with_tf = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
-        output="screen",
+        output="log",
         arguments=[
             # Gazebo -> ROS
             ["/world/", world_name, "/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock"],
@@ -30,6 +32,9 @@ def generate_launch_description():
             "/minidog/ouster/points@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan",
             # ROS -> Gazebo
             "/model/minidog/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist",
+            "--ros-args",
+            "--log-level",
+            log_level,
         ],
         remappings=[
             ([ "/world/", world_name, "/clock" ], "/clock"),
@@ -46,7 +51,7 @@ def generate_launch_description():
     bridge_no_tf = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
-        output="screen",
+        output="log",
         arguments=[
             # Gazebo -> ROS
             ["/world/", world_name, "/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock"],
@@ -59,6 +64,9 @@ def generate_launch_description():
             "/minidog/ouster/points@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan",
             # ROS -> Gazebo
             "/model/minidog/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist",
+            "--ros-args",
+            "--log-level",
+            log_level,
         ],
         remappings=[
             ([ "/world/", world_name, "/clock" ], "/clock"),
@@ -75,6 +83,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("world_name", default_value="minidog_world"),
+            DeclareLaunchArgument("quiet_terminal", default_value="false"),
+            DeclareLaunchArgument("log_level", default_value="warn"),
             DeclareLaunchArgument(
                 # bridge_tf=true means Gazebo provides minidog/odom->minidog/base_footprint.
                 # If you run scan-matching odom (rf2o), set bridge_tf=false to avoid conflicting TF.

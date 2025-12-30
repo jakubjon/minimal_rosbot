@@ -63,6 +63,8 @@ bt_navigator:
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
+    # qre_go2 pattern: use replanning + recovery BT so the robot doesn't just freeze at obstacles.
+    default_bt_xml_filename: "navigate_w_replanning_and_recovery.xml"
 
 behavior_server:
   ros__parameters:

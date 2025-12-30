@@ -13,6 +13,8 @@ def generate_launch_description():
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     world_name = LaunchConfiguration("world_name")
+    quiet_terminal = LaunchConfiguration("quiet_terminal")
+    log_level = LaunchConfiguration("log_level")
     enable_slam = LaunchConfiguration("enable_slam")
     enable_nav2 = LaunchConfiguration("enable_nav2")
     enable_mux = LaunchConfiguration("enable_mux")
@@ -28,7 +30,11 @@ def generate_launch_description():
 
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "sim.launch.py"])),
-        launch_arguments={"world_name": world_name, "use_sim_time": use_sim_time}.items(),
+        launch_arguments={
+            "world_name": world_name,
+            "use_sim_time": use_sim_time,
+            "quiet_terminal": quiet_terminal,
+        }.items(),
     )
     bridge = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "bridge.launch.py"])),
@@ -37,20 +43,26 @@ def generate_launch_description():
             "world_name": world_name,
             "use_sim_time": use_sim_time,
             "bridge_tf": PythonExpression(["'", odom_source, "' == 'wheel'"]),
+            "quiet_terminal": quiet_terminal,
+            "log_level": log_level,
         }.items(),
     )
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "rviz.launch.py"])),
-        launch_arguments={"use_sim_time": use_sim_time}.items(),
+        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
     )
     slam = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "slam.launch.py"])),
-        launch_arguments={"use_sim_time": use_sim_time}.items(),
+        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
         condition=IfCondition(enable_slam),
     )
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "nav2.launch.py"])),
-        launch_arguments={"use_sim_time": use_sim_time}.items(),
+        launch_arguments={
+            "use_sim_time": use_sim_time,
+            "quiet_terminal": quiet_terminal,
+            "log_level": log_level,
+        }.items(),
         condition=IfCondition(enable_nav2),
     )
     mux = IncludeLaunchDescription(
@@ -70,7 +82,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([FindPackageShare("minidog_explore"), "launch", "explore.launch.py"])
         ),
-        launch_arguments={"use_sim_time": use_sim_time}.items(),
+        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
         condition=IfCondition(enable_explore),
     )
     rqt = ExecuteProcess(
@@ -155,6 +167,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("world_name", default_value="minidog_world"),
+            DeclareLaunchArgument("quiet_terminal", default_value="true"),
+            DeclareLaunchArgument("log_level", default_value="warn"),
             DeclareLaunchArgument("enable_slam", default_value="true"),
             DeclareLaunchArgument("enable_nav2", default_value="false"),
             DeclareLaunchArgument("enable_mux", default_value="true"),
@@ -177,6 +191,8 @@ def generate_launch_description():
             SetEnvironmentVariable("ROS_LOCALHOST_ONLY", ros_localhost_only),
             SetEnvironmentVariable("RMW_IMPLEMENTATION", rmw_implementation),
             SetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE", fastdds_profiles_file),
+            # qre_go2 pattern: ensure stdout logs flush line-buffered (better behavior under launch/logging).
+            SetEnvironmentVariable("RCUTILS_LOGGING_BUFFERED_STREAM", "1"),
             cleanup,
             start_everything_after_cleanup,
         ]

@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -47,6 +48,9 @@ class FrontierExplorer(Node):
         self.declare_parameter("goal_cooldown_sec", 5.0)
         # Keep goals away from the map boundary to avoid Nav2 worldToMap() edge cases.
         self.declare_parameter("goal_margin_cells", 10)
+        # If Nav2 aborts a goal (blocked / no path), avoid picking nearby goals for a while.
+        self.declare_parameter("blocked_goal_radius_m", 0.75)
+        self.declare_parameter("blocked_goal_ttl_sec", 30.0)
 
         map_topic = self.get_parameter("map_topic").get_parameter_value().string_value
         enable_topic = self.get_parameter("enable_topic").get_parameter_value().string_value
@@ -60,6 +64,12 @@ class FrontierExplorer(Node):
         self.goal_margin_cells = (
             self.get_parameter("goal_margin_cells").get_parameter_value().integer_value
         )
+        self.blocked_goal_radius_m = (
+            self.get_parameter("blocked_goal_radius_m").get_parameter_value().double_value
+        )
+        self.blocked_goal_ttl_sec = (
+            self.get_parameter("blocked_goal_ttl_sec").get_parameter_value().double_value
+        )
 
         self.enabled = False
         self.last_goal_time = None
@@ -68,6 +78,8 @@ class FrontierExplorer(Node):
 
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.goal_in_flight = False
+        self.last_goal_xy: Optional[Tuple[float, float]] = None
+        self.blocked_goals: List[Tuple[float, float, float]] = []  # (x, y, expires_wall_time)
 
         self.create_subscription(Bool, enable_topic, self._on_enable, 10)
         self.create_subscription(OccupancyGrid, map_topic, self._on_map, 10)
@@ -165,8 +177,19 @@ class FrontierExplorer(Node):
         # Choose the farthest from map origin (simple, deterministic)
         best = None
         best_d2 = -1.0
+        now_wall = time.time()
+        # Drop expired blocked goals.
+        self.blocked_goals = [(x, y, exp) for (x, y, exp) in self.blocked_goals if exp > now_wall]
+
         for x, y in frontier_cells:
             wx, wy = self._cell_to_world(x, y)
+            # Skip blocked region
+            for bx, by, _exp in self.blocked_goals:
+                if (wx - bx) * (wx - bx) + (wy - by) * (wy - by) <= self.blocked_goal_radius_m * self.blocked_goal_radius_m:
+                    wx = None
+                    break
+            if wx is None:
+                continue
             d2 = wx * wx + wy * wy
             if d2 > best_d2:
                 best_d2 = d2
@@ -212,6 +235,7 @@ class FrontierExplorer(Node):
         self.get_logger().info(f"Sending frontier goal: x={gx:.2f} y={gy:.2f} frame={self.goal_frame}")
         self.goal_in_flight = True
         self.last_goal_time = now
+        self.last_goal_xy = (gx, gy)
 
         send_future = self.nav.send_goal_async(goal)
         send_future.add_done_callback(self._on_goal_sent)
@@ -229,6 +253,10 @@ class FrontierExplorer(Node):
         try:
             status = future.result().status
             self.get_logger().info(f"NavigateToPose finished with status={status}")
+            # 4 == ABORTED in action_msgs/GoalStatus (common for blocked/no path)
+            if status == 4 and self.last_goal_xy is not None:
+                bx, by = self.last_goal_xy
+                self.blocked_goals.append((bx, by, time.time() + self.blocked_goal_ttl_sec))
         finally:
             self.goal_in_flight = False
 

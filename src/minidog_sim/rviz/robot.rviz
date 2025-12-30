@@ -63,6 +63,75 @@ Visualization Manager:
       Show Arrows: true
       Show Axes: true
       Show Names: false
+    - Class: rviz_default_plugins/Pose
+      Enabled: true
+      Name: Nav2Goal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /goal_pose
+      Shape: Arrow
+      Color: 255; 255; 0
+      Alpha: 1
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: GlobalPlan
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /plan
+      Color: 0; 255; 255
+      Line Style: Lines
+      Line Width: 0.03
+    - Class: rviz_default_plugins/Path
+      Enabled: true
+      Name: LocalPlan
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_plan
+      Color: 255; 0; 255
+      Line Style: Lines
+      Line Width: 0.03
+    - Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: GlobalCostmap
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /global_costmap/costmap_raw
+      Alpha: 0.4
+      Color Scheme: costmap
+    - Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: LocalCostmap
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_costmap/costmap_raw
+      Alpha: 0.4
+      Color Scheme: costmap
+    - Class: rviz_default_plugins/Polygon
+      Enabled: true
+      Name: Footprint
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_costmap/published_footprint
+      Color: 255; 165; 0
+      Alpha: 1
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

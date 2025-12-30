@@ -45,6 +45,52 @@ ros2 launch minidog_sim bringup.launch.py
 
 Important: source the **workspace overlay** (`install/setup.bash`), not a single-package local setup file.
 
+### Logging (quiet terminal by default)
+
+By default, bringup runs with a **quiet terminal** and routes most node output into ROS log files under `~/.ros/log/...`.
+
+Useful args:
+
+```bash
+# Defaults:
+#   quiet_terminal:=true
+#   log_level:=warn
+ros2 launch minidog_sim bringup.launch.py quiet_terminal:=false log_level:=info
+```
+
+Tip: after a run, check `~/.ros/log/latest/` to see per-node logs.
+
+### Web UI (Streamlit)
+
+This repo includes a small Streamlit UI for:
+- switching **manual ↔ autonomy** (via `/autonomy_enabled`)
+- publishing **manual /cmd_vel_manual**
+- monitoring whether key topics are being received (with “OK” freshness indicators)
+
+Install pip locally (no sudo) and install requirements:
+
+```bash
+cd /home/jjon/ROBOPES/minimal
+curl -fsSL -o get-pip.py https://bootstrap.pypa.io/get-pip.py
+python3 get-pip.py --user
+python3 -m pip install --user -r src/minidog_sim/webapp/requirements.txt
+```
+
+Run:
+
+```bash
+cd /home/jjon/ROBOPES/minimal
+source /opt/ros/humble/setup.bash
+. install/setup.bash
+python3 -m streamlit run src/minidog_sim/webapp/app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
+```
+
+Or start it with bringup:
+
+```bash
+ros2 launch minidog_sim bringup.launch.py enable_web:=true web_port:=8501
+```
+
 
 ### Manual drive (default)
 
@@ -128,6 +174,15 @@ ros2 topic pub /autonomy_enabled std_msgs/msg/Bool "{data: false}" -r 2
 Notes:
 - Nav2 velocity output is `/cmd_vel_nav`. Manual input is `/cmd_vel_manual`. The mux publishes the final `/cmd_vel` that Gazebo consumes. Avoid publishing directly to `/cmd_vel` from teleop to prevent conflicts.
 - Wheel odometry from Gazebo is bridged to `/wheel_odom` for debugging. When using `odom_source:=scan`, Gazebo TF bridging is disabled to avoid TF conflicts.
+- Nav2 is configured to use a **replanning + recovery behavior tree** so it can try to recover (spin/backup/etc) instead of freezing permanently when blocked.
+
+## RViz navigation visualization
+
+`rviz/robot.rviz` includes extra Nav2 visualization by default:
+- current **goal** (`/goal_pose`)
+- **global plan** (`/plan`) and **local plan** (`/local_plan`)
+- **global/local costmaps** (`/global_costmap/costmap_raw`, `/local_costmap/costmap_raw`)
+- **footprint** (`/local_costmap/published_footprint`)
 
 ## WSL note (ros2 CLI hangs)
 

@@ -9,6 +9,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     namespace = LaunchConfiguration("namespace")
     nav2_params_file = LaunchConfiguration("nav2_params_file")
+    log_level = LaunchConfiguration("log_level")
 
     default_params = PathJoinSubstitution(
         [FindPackageShare("minidog_sim"), "config", "nav2_slam.yaml"]
@@ -19,57 +20,64 @@ def generate_launch_description():
             package="nav2_controller",
             executable="controller_server",
             name="controller_server",
-            output="screen",
+            output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
             remappings=[("/cmd_vel", "/cmd_vel_nav"), ("/odom", "/odom")],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
             package="nav2_planner",
             executable="planner_server",
             name="planner_server",
-            output="screen",
+            output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
             package="nav2_bt_navigator",
             executable="bt_navigator",
             name="bt_navigator",
-            output="screen",
+            output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
             # Ensure Nav2 never publishes directly to /cmd_vel (mux owns /cmd_vel).
             remappings=[("/cmd_vel", "/cmd_vel_nav")],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
             package="nav2_behaviors",
             executable="behavior_server",
             name="behavior_server",
-            output="screen",
+            output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
             # Recovery behaviors can publish cmd_vel; keep them on /cmd_vel_nav.
             remappings=[("/cmd_vel", "/cmd_vel_nav")],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
             package="nav2_waypoint_follower",
             executable="waypoint_follower",
             name="waypoint_follower",
-            output="screen",
+            output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
             remappings=[("/cmd_vel", "/cmd_vel_nav")],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
             package="nav2_velocity_smoother",
             executable="velocity_smoother",
             name="velocity_smoother",
-            output="screen",
+            output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
             remappings=[("/cmd_vel", "/cmd_vel_nav")],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
             package="nav2_lifecycle_manager",
             executable="lifecycle_manager",
             name="lifecycle_manager",
-            output="screen",
+            output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
+            arguments=["--ros-args", "--log-level", log_level],
         ),
     ]
 
@@ -78,6 +86,7 @@ def generate_launch_description():
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("namespace", default_value=""),
             DeclareLaunchArgument("nav2_params_file", default_value=default_params),
+            DeclareLaunchArgument("log_level", default_value="warn"),
             GroupAction(
                 [
                     PushRosNamespace(namespace),
