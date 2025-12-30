@@ -1,0 +1,15 @@
+Project intent (minidog_sim):
+- This repo is a sandbox sim, but should be structured to later reuse on real hardware running the qre_go2 stack.
+- Use qre_go2/ as a reference architecture: modular launches, strict TF ownership, stable topics, clear remappings.
+- Odometry source differs from qre_go2: use rf2o_laser_odometry (scan-matching) as the preferred odom source.
+- Default mode is manual driving via /cmd_vel (ROS2 geometry_msgs/Twist). Autonomous mode must be explicitly enabled.
+- Ultimate goal: autonomous exploration of unknown environments while simultaneously building a map (SLAM + Nav2 + frontier exploration).
+
+Repo conventions:
+- Keep TF unambiguous:
+  - rf2o publishes minidog/odom -> minidog/base_footprint (when odom_source:=scan)
+  - slam_toolbox publishes map -> minidog/odom
+  - Avoid multiple publishers for the same transform.
+- Keep Gazebo wheel odometry available only as /wheel_odom for debugging (do not feed it into SLAM/TF when using scan odom).
+- Keep launch files small and composable; bringup.launch.py wires them together with explicit args.
+

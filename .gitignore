@@ -2,6 +2,7 @@
 build/
 install/
 log/
+qre_go2/
 
 # Python cache
 __pycache__/

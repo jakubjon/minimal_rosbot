@@ -1,0 +1,21 @@
+laser_scan_matcher:
+  ros__parameters:
+    use_sim_time: true
+
+    # Frames (match our sim)
+    fixed_frame: "minidog/odom"
+    base_frame: "minidog/base_footprint"
+
+    # Output TF (fixed_frame -> base_frame)
+    publish_tf: true
+
+    # Pure scan-matching odometry (no wheel odom / imu prediction)
+    use_odom: false
+    use_imu: false
+    use_vel: false
+
+    # Keyframe update thresholds
+    kf_dist_linear: 0.10
+    kf_dist_angular: 0.175
+
+

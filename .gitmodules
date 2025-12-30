@@ -1,0 +1,4 @@
+[submodule "src/third_party/rf2o_laser_odometry"]
+	path = src/third_party/rf2o_laser_odometry
+	url = https://github.com/Adlink-ROS/rf2o_laser_odometry.git
+	branch = humble-devel
