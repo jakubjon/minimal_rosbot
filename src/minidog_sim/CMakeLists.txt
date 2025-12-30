@@ -3,7 +3,7 @@ project(minidog_sim)
 
 find_package(ament_cmake REQUIRED)
 
-install(DIRECTORY launch urdf config rviz worlds
+install(DIRECTORY launch urdf config rviz worlds models
   DESTINATION share/${PROJECT_NAME}
 )
 

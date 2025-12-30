@@ -22,6 +22,7 @@ def generate_launch_description():
             ],
             "/model/minidog/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry",
             "/model/minidog/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V",
+            "/minidog/ouster/points@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan",
             # ROS -> Gazebo
             "/model/minidog/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist",
         ],
@@ -30,6 +31,7 @@ def generate_launch_description():
             ([ "/world/", world_name, "/model/minidog/joint_state" ], "/joint_states"),
             ("/model/minidog/odometry", "/odom"),
             ("/model/minidog/tf", "/tf"),
+            ("/minidog/ouster/points", "/scan"),
             ("/model/minidog/cmd_vel", "/cmd_vel"),
         ],
         parameters=[{"use_sim_time": use_sim_time}],

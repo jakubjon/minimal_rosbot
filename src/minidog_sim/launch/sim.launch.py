@@ -1,9 +1,8 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -12,13 +11,8 @@ def generate_launch_description():
     world = LaunchConfiguration("world")
     world_name = LaunchConfiguration("world_name")
 
-    robot_xacro_path = PathJoinSubstitution(
-        [FindPackageShare("minidog_sim"), "urdf", "robot.urdf.xacro"]
-    )
-
-    robot_description = ParameterValue(
-        Command([FindExecutable(name="xacro"), " ", robot_xacro_path]),
-        value_type=str,
+    robot_sdf_path = PathJoinSubstitution(
+        [FindPackageShare("minidog_sim"), "models", "minidog", "model.sdf"]
     )
 
     gz_sim_launch = IncludeLaunchDescription(
@@ -41,12 +35,12 @@ def generate_launch_description():
         arguments=[
             "-world",
             world_name,
+            "-file",
+            robot_sdf_path,
             "-name",
             "minidog",
             "-allow_renaming",
             "true",
-            "-param",
-            "robot_description",
             "-x",
             "0.0",
             "-y",
@@ -54,7 +48,7 @@ def generate_launch_description():
             "-z",
             "0.15",
         ],
-        parameters=[{"use_sim_time": use_sim_time, "robot_description": robot_description}],
+        parameters=[{"use_sim_time": use_sim_time}],
     )
 
     # Give Gazebo a moment to initialize the world before spawning.

@@ -227,6 +227,33 @@
     <axis xyz="0 1 0"/>
   </joint>
 
+  <!-- 3D lidar ("Ouster-like") mounted on top -->
+  <link name="lidar_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.05"/>
+      </geometry>
+      <material name="DarkGrey">
+        <color rgba="0.2 0.2 0.2 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.03" length="0.05"/>
+      </geometry>
+    </collision>
+    <xacro:inertial_cylinder_y mass="0.2" radius="0.03" length="0.05"/>
+  </link>
+
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <!-- forward, centered, above chassis -->
+    <origin xyz="0.10 0.0 0.07" rpy="0 0 0"/>
+  </joint>
+
   <!-- Gazebo Sim (Fortress / ign-gazebo6) system plugin configuration.
        This is consumed by sdformat_urdf when the model is spawned into Gazebo. -->
   <gazebo>
@@ -260,6 +287,38 @@
       <robot_base_frame>base_footprint</robot_base_frame>
       <odom_publish_frequency>50</odom_publish_frequency>
     </plugin>
+  </gazebo>
+
+  <!-- Lidar sensor definition for Gazebo. Output is a PointCloudPacked topic,
+       bridged to ROS PointCloud2, then converted to LaserScan for slam_toolbox. -->
+  <gazebo reference="lidar_link">
+    <sensor name="ouster" type="gpu_lidar">
+      <topic>/minidog/ouster/points</topic>
+      <update_rate>10</update_rate>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>1024</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>32</samples>
+            <resolution>1</resolution>
+            <min_angle>-0.261799</min_angle>
+            <max_angle>0.261799</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.1</min>
+          <max>20.0</max>
+          <resolution>0.01</resolution>
+        </range>
+      </lidar>
+      <alwaysOn>1</alwaysOn>
+      <visualize>true</visualize>
+    </sensor>
   </gazebo>
 
 </robot>

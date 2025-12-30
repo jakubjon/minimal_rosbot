@@ -1,0 +1,20 @@
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: true
+
+    # Frames must match the sim:
+    # /odom: frame_id=minidog/odom, child_frame_id=minidog/base_footprint
+    odom_frame: "minidog/odom"
+    base_frame: "minidog/base_footprint"
+    map_frame: "map"
+
+    # Input scan
+    scan_topic: "/scan"
+
+    # Reasonable defaults for a small indoor world
+    resolution: 0.05
+    max_laser_range: 20.0
+    map_update_interval: 2.0
+    transform_publish_period: 0.05
+
+
