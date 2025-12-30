@@ -18,6 +18,9 @@ def generate_launch_description():
     enable_mux = LaunchConfiguration("enable_mux")
     enable_explore = LaunchConfiguration("enable_explore")
     enable_rqt = LaunchConfiguration("enable_rqt")
+    enable_web = LaunchConfiguration("enable_web")
+    web_host = LaunchConfiguration("web_host")
+    web_port = LaunchConfiguration("web_port")
     odom_source = LaunchConfiguration("odom_source")
     ros_localhost_only = LaunchConfiguration("ros_localhost_only")
     rmw_implementation = LaunchConfiguration("rmw_implementation")
@@ -81,6 +84,14 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(enable_rqt),
     )
+
+    web = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([pkg_share, "launch", "web.launch.py"])
+        ),
+        launch_arguments={"host": web_host, "port": web_port}.items(),
+        condition=IfCondition(enable_web),
+    )
     scan_odom = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "scan_odom.launch.py"])),
         launch_arguments={
@@ -136,7 +147,7 @@ def generate_launch_description():
     start_everything_after_cleanup = RegisterEventHandler(
         OnProcessExit(
             target_action=cleanup,
-            on_exit=[sim, bridge, scan_odom, scan_matcher_odom, mux, rviz, slam, nav2, explore, rqt],
+            on_exit=[sim, bridge, scan_odom, scan_matcher_odom, mux, rviz, slam, nav2, explore, rqt, web],
         )
     )
 
@@ -149,6 +160,9 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_mux", default_value="true"),
             DeclareLaunchArgument("enable_explore", default_value="false"),
             DeclareLaunchArgument("enable_rqt", default_value="false"),
+            DeclareLaunchArgument("enable_web", default_value="false"),
+            DeclareLaunchArgument("web_host", default_value="0.0.0.0"),
+            DeclareLaunchArgument("web_port", default_value="8501"),
             DeclareLaunchArgument(
                 # wheel: odom->base comes from Gazebo TF (wheel-integrated).
                 # scan:  odom->base comes from scan matching (rf2o), wheel odom is still available as /wheel_odom.
