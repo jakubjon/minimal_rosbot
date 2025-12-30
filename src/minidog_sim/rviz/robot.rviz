@@ -30,7 +30,7 @@ Visualization Manager:
         Value: /robot_description
       Enabled: true
       Name: RobotModel
-      TF Prefix: "minimal_4wheel_ackermann"
+      TF Prefix: "minidog"
       Update Interval: 0
       Visual Enabled: true
       Collision Enabled: false
@@ -44,7 +44,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: minimal_4wheel_ackermann/odom
+    Fixed Frame: minidog/odom
     Frame Rate: 30
   Name: root
   Tools:

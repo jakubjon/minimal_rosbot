@@ -1,31 +1,31 @@
 # Not consumed directly by ros_gz_bridge in Humble; kept as a single source of truth
 # for the bridge.launch.py topic list.
 bridges:
-  - topic: /world/empty/clock
+  - topic: /world/minidog_world/clock
     ros_type: rosgraph_msgs/msg/Clock
     gz_type: ignition.msgs.Clock
     direction: gz_to_ros
     ros_remap: /clock
 
-  - topic: /world/minimal_4wheel_world/model/minimal_4wheel_ackermann/joint_state
+  - topic: /world/minidog_world/model/minidog/joint_state
     ros_type: sensor_msgs/msg/JointState
     gz_type: ignition.msgs.Model
     direction: gz_to_ros
     ros_remap: /joint_states
 
-  - topic: /model/minimal_4wheel_ackermann/odometry
+  - topic: /model/minidog/odometry
     ros_type: nav_msgs/msg/Odometry
     gz_type: ignition.msgs.Odometry
     direction: gz_to_ros
     ros_remap: /odom
 
-  - topic: /model/minimal_4wheel_ackermann/tf
+  - topic: /model/minidog/tf
     ros_type: tf2_msgs/msg/TFMessage
     gz_type: ignition.msgs.Pose_V
     direction: gz_to_ros
     ros_remap: /tf
 
-  - topic: /model/minimal_4wheel_ackermann/cmd_vel
+  - topic: /model/minidog/cmd_vel
     ros_type: geometry_msgs/msg/Twist
     gz_type: ignition.msgs.Twist
     direction: ros_to_gz

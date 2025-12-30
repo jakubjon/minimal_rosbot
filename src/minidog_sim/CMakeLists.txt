@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(minimal_4wheel_ackermann_sim)
+project(minidog_sim)
 
 find_package(ament_cmake REQUIRED)
 

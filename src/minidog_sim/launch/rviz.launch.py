@@ -9,7 +9,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
 
-    pkg_share = FindPackageShare("minimal_4wheel_ackermann_sim")
+    pkg_share = FindPackageShare("minidog_sim")
     robot_xacro_path = PathJoinSubstitution([pkg_share, "urdf", "robot.urdf.xacro"])
     rviz_config_path = PathJoinSubstitution([pkg_share, "rviz", "robot.rviz"])
 
@@ -28,7 +28,7 @@ def generate_launch_description():
                 "robot_description": robot_description,
                 # Gazebo publishes odom / base_footprint with model-name prefix.
                 # Match that so RViz has a connected TF tree.
-                "frame_prefix": "minimal_4wheel_ackermann/",
+                "frame_prefix": "minidog/",
             }
         ],
     )

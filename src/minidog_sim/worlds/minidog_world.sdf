@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
   <!-- Use a unique world name so /world/<name>/clock doesn't collide with other running sims -->
-  <world name="minimal_4wheel_world">
+  <world name="minidog_world">
     <physics name="1ms" type="ignored">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>

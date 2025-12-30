@@ -13,7 +13,7 @@ def generate_launch_description():
     world_name = LaunchConfiguration("world_name")
 
     robot_xacro_path = PathJoinSubstitution(
-        [FindPackageShare("minimal_4wheel_ackermann_sim"), "urdf", "robot.urdf.xacro"]
+        [FindPackageShare("minidog_sim"), "urdf", "robot.urdf.xacro"]
     )
 
     robot_description = ParameterValue(
@@ -42,7 +42,7 @@ def generate_launch_description():
             "-world",
             world_name,
             "-name",
-            "minimal_4wheel_ackermann",
+            "minidog",
             "-allow_renaming",
             "true",
             "-param",
@@ -67,13 +67,13 @@ def generate_launch_description():
                 "world",
                 default_value=PathJoinSubstitution(
                     [
-                        FindPackageShare("minimal_4wheel_ackermann_sim"),
+                        FindPackageShare("minidog_sim"),
                         "worlds",
-                        "minimal_4wheel_world.sdf",
+                        "minidog_world.sdf",
                     ]
                 ),
             ),
-            DeclareLaunchArgument("world_name", default_value="minimal_4wheel_world"),
+            DeclareLaunchArgument("world_name", default_value="minidog_world"),
             gz_sim_launch,
             spawn_after_gz,
         ]

@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>minimal_4wheel_ackermann_sim</name>
+  <name>minidog_sim</name>
   <version>0.0.1</version>
   <description>Minimal Gazebo Fortress (Ignition Gazebo) + ROS 2 Humble Ackermann robot simulation driven by /cmd_vel and visualized in RViz.</description>
 

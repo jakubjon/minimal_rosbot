@@ -8,7 +8,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    pkg_share = FindPackageShare("minimal_4wheel_ackermann_sim")
+    pkg_share = FindPackageShare("minidog_sim")
 
     world_name = LaunchConfiguration("world_name")
     ros_localhost_only = LaunchConfiguration("ros_localhost_only")
@@ -56,7 +56,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("world_name", default_value="minimal_4wheel_world"),
+            DeclareLaunchArgument("world_name", default_value="minidog_world"),
             # WSL2 can have flaky multicast DDS discovery. Localhost-only makes graph discovery reliable.
             DeclareLaunchArgument("ros_localhost_only", default_value="0"),
             # If empty, use default RMW. Set to rmw_fastrtps_cpp if discovery still hangs.
