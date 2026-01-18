@@ -8,33 +8,14 @@ This repo is a **sandbox** designed to follow the modular integration logic from
 
 Ultimate target: **autonomous exploration of unknown space while building a map** (online SLAM + Nav2 + frontier exploration), with **manual mode as the default**.
 
-## Requirements
-- ROS 2 Humble
-- Gazebo Fortress (Ignition Gazebo 6)
-- `ros_gz_sim`, `ros_gz_bridge`
-- Nav2 (`nav2_bringup` and related packages)
-
 ## Build
-
 ```bash
 cd /home/jjon/ROBOPES/minimal
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --base-paths src/minidog_sim src/minidog_cmd_mux src/minidog_explore src/third_party/rf2o_laser_odometry
+colcon build --symlink-install 
 ```
 
-If you previously renamed packages or removed `install/` and now see warnings about non-existent paths in `AMENT_PREFIX_PATH` / `CMAKE_PREFIX_PATH`, do:
-```bash
-unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH
-source /opt/ros/humble/setup.bash
-```
-
-## Run (single bringup)
-
-This launch file first cleans up common orphan processes (Gazebo + bridges) and then starts:
-- Gazebo GUI + spawns the robot
-- ros_gz bridges (`/cmd_vel`, `/clock`, `/joint_states`, `/odom`, `/tf`)
-- `robot_state_publisher`
-- RViz (with correct TF prefix)
+## Run
 
 ```bash
 cd /home/jjon/ROBOPES/minimal
@@ -43,7 +24,21 @@ source /opt/ros/humble/setup.bash
 ros2 launch minidog_sim bringup.launch.py
 ```
 
-Important: source the **workspace overlay** (`install/setup.bash`), not a single-package local setup file.
+Key launch args:
+- `odom_source`: `wheel | scan | scan_matcher`
+- `enable_slam`: start `slam_toolbox`
+- `enable_nav2`: start Nav2 stack
+- `enable_explore`: start frontier exploration node
+- `enable_web`: start Streamlit UI
+- `quiet_terminal`: route most node output into log files
+- `log_level`: Nav2 and bridge log level (`warn` default)
+
+This launch file first cleans up common orphan processes (Gazebo + bridges) and then starts:
+- Gazebo GUI + spawns the robot
+- ros_gz bridges (`/cmd_vel`, `/clock`, `/joint_states`, `/odom`, `/tf`)
+- `robot_state_publisher`
+- RViz (with correct TF prefix)
+
 
 ### Logging (quiet terminal by default)
 
@@ -66,15 +61,6 @@ This repo includes a small Streamlit UI for:
 - switching **manual ↔ autonomy** (via `/autonomy_enabled`)
 - publishing **manual /cmd_vel_manual**
 - monitoring whether key topics are being received (with “OK” freshness indicators)
-
-Install pip locally (no sudo) and install requirements:
-
-```bash
-cd /home/jjon/ROBOPES/minimal
-curl -fsSL -o get-pip.py https://bootstrap.pypa.io/get-pip.py
-python3 get-pip.py --user
-python3 -m pip install --user -r src/minidog_sim/webapp/requirements.txt
-```
 
 Run:
 
@@ -184,12 +170,5 @@ Notes:
 - **global/local costmaps** (`/global_costmap/costmap_raw`, `/local_costmap/costmap_raw`)
 - **footprint** (`/local_costmap/published_footprint`)
 
-## WSL note (ros2 CLI hangs)
-
-On some WSL setups the ROS 2 CLI may hang due to a stuck `ros2 daemon`. Use `--no-daemon`:
-
-```bash
-ros2 topic list --no-daemon
-```
 
 
