@@ -1,193 +1,163 @@
 ## minidog_sim architecture
 
-This document describes how the current simulation stack is wired, how robot commanding works (manual vs autonomy), and how mapping/navigation are composed. It also summarizes the primary nodes, their states, and their interfaces (topics/TF).
+### Design intent
 
-### Design intent (high level)
+- **Sandbox for autonomous exploration**: full SLAM + Nav2 + frontier exploration in simulation, reusable patterns for real hardware.
+- **Autonomy-first**: the system starts exploring immediately; manual override available via web UI or topic.
+- **Ackermann-aware**: the robot cannot rotate in place; all navigation, recovery behaviors, and the custom behavior tree account for this constraint.
 
-- **Sandbox now, reusable later**: structure follows `qre_go2`’s modular launch + stable topics + strict TF ownership conventions, so the same patterns can be reused on real hardware later.
-- **Default is manual**: the robot is controllable by `/cmd_vel_manual` at all times; autonomy must be explicitly enabled.
-- **Preferred odom source is scan matching**: the global motion estimate should come from scan data, not wheel odometry.
+### System overview
 
+```
+Gazebo Fortress (headless)
+  |
+  v
+ros_gz_bridge  -->  /scan, /clock, /joint_states, /cmd_vel, /wheel_odom
+  |
+  +-- robot_state_publisher (URDF TF)
+  +-- static_transform_publisher (base_footprint -> ouster)
+  +-- minidog_scan_odom (wheel odom: odom->base_footprint TF)
+  |
+  +-- slam_toolbox (map->odom TF, /map)
+  |
+  +-- Nav2 (controller, planner, bt_navigator, behavior_server, lifecycle_manager)
+  |     |-- reads /map, /scan, TF
+  |     |-- publishes /cmd_vel_nav
+  |     |-- uses custom Ackermann BT (no Spin recovery)
+  |
+  +-- minidog_frontier_explorer
+  |     |-- reads /map, TF
+  |     |-- sends NavigateToPose goals
+  |     |-- clears costmaps on abort streaks
+  |     |-- unstick mechanism (reverse cmd_vel)
+  |
+  +-- minidog_cmd_mux
+  |     |-- /cmd_vel_manual + /cmd_vel_nav -> /cmd_vel
+  |     |-- gated by /autonomy_enabled
+  |
+  +-- Streamlit web UI (port 8501)
+```
 
+### Staggered launch order
 
-### Commanding architecture (manual vs autonomy)
+Race conditions between Gazebo, SLAM, and Nav2 are avoided with `TimerAction` delays in `bringup.launch.py`:
 
-Manual and autonomous velocity commands are multiplexed so the robot never “accidentally” enters autonomy.
+| Phase | Delay | Components |
+|---|---|---|
+| 1 | 0s | Gazebo, bridge, TF, odometry, mux, RViz |
+| 2 | 5s | SLAM (`slam_toolbox`) |
+| 3 | 10s | Nav2 servers (controller, planner, bt_navigator, behavior_server) |
+| 3b | 15s | Nav2 lifecycle_manager (configures servers) |
+| 4 | 20s | Frontier explorer, web UI |
 
-Topics:
-- Manual input: `/cmd_vel_manual` (`geometry_msgs/Twist`)
-- Autonomy input (Nav2 output): `/cmd_vel_nav` (`geometry_msgs/Twist`)
-- Final output to robot/sim: `/cmd_vel` (`geometry_msgs/Twist`)
-- Autonomy enable switch: `/autonomy_enabled` (`std_msgs/Bool`)
+### Commanding (manual vs autonomy)
 
-Mux behavior (`minidog_cmd_mux`):
-- If `/autonomy_enabled == false`: forward `/cmd_vel_manual` → `/cmd_vel`
-- If `/autonomy_enabled == true`: forward `/cmd_vel_nav` → `/cmd_vel`
-- Manual override: if autonomy is enabled but you actively publish manual commands, the mux forwards manual (useful for safety/bootstrap).
+`minidog_cmd_mux` multiplexes velocity commands:
+- `/cmd_vel_manual` (manual joystick/web UI)
+- `/cmd_vel_nav` (Nav2 output)
+- `/cmd_vel` (final output to Gazebo)
+- `/autonomy_enabled` (`Bool`): when true, forwards `/cmd_vel_nav`; when false, forwards `/cmd_vel_manual`
 
-### Simulation transport (ROS <-> Gazebo)
+Both `cmd_vel_mux` and `frontier_explorer` start with `start_enabled: true` for auto-autonomy.
 
-Gazebo is started via `ign gazebo` and the robot model is spawned from SDF.
+### Odometry
 
-`ros_gz_bridge/parameter_bridge` bridges:
-- `/cmd_vel` (ROS) → `/model/minidog/cmd_vel` (Gazebo transport)
-- `/clock`, `/joint_states`, `/wheel_odom`, `/scan`
-- optionally `/tf` (only in `odom_source:=wheel`)
+Three modes via `odom_source` launch argument:
+- **`wheel`** (default in `run.sh`): `minidog_scan_odom` node reads Gazebo's wheel odometry from the bridge and publishes `minidog/odom -> minidog/base_footprint` TF. Most reliable in simulation.
+- **`scan`**: `rf2o_laser_odometry` computes odom from lidar scan matching. Can drift.
+- **`scan_matcher`**: external laser_scan_matcher node. Experimental.
 
-The robot model uses an Ackermann steering system plugin in SDF and consumes the bridged `/model/minidog/cmd_vel`.
+### SLAM
 
-### Mapping + navigation + exploration
+`slam_toolbox` (async mode):
+- Subscribes: `/scan`, TF
+- Publishes: `/map`, `map -> minidog/odom` TF
+- Key tuning: `throttle_scans: 5` (processes every 5th scan to reduce CPU load)
+- Config: `config/slam_toolbox_async.yaml`
 
-#### SLAM
-- `slam_toolbox` subscribes to `/scan` and `TF` and publishes:
-  - `/map` (`nav_msgs/OccupancyGrid`)
-  - `map -> minidog/odom` TF
+### Nav2
 
-#### Scan odometry (preferred)
-- `rf2o_laser_odometry_node` subscribes to `/scan` and publishes:
-  - `/odom` (`nav_msgs/Odometry`) (topic)
-  - `minidog/odom -> minidog/base_footprint` (TF)
+Individual lifecycle-managed nodes, configured via `config/nav2_slam.yaml`:
 
-#### Nav2
-Nav2 is launched as individual nodes + a lifecycle manager:
-- `controller_server`, `planner_server`, `bt_navigator`, `behavior_server`, `waypoint_follower`, `velocity_smoother`, `lifecycle_manager`
+- **Planner**: `NavfnPlanner` with A*, tolerance 1.0, `allow_unknown: true`
+- **Controller**: `RegulatedPurePursuitController`, 0.25 m/s, strict collision detection, reversing allowed
+- **Behavior tree**: custom `nav2_bt_ackermann.xml` (no Spin recovery, uses ClearCostmap + Wait + BackUp)
+- **Costmap inflation**: radius 0.25m (>= inscribed radius 0.225), cost_scaling_factor 3.0
+- **Lifecycle manager**: 10s bond_timeout, delayed 5s after server nodes
 
-Command output from Nav2 is remapped so it **never publishes directly to `/cmd_vel`**:
-- Nav2 publishes to `/cmd_vel_nav`, which the mux gates into `/cmd_vel`.
+### Frontier explorer
 
-Behavior tree:
-- `bt_navigator.default_bt_xml_filename` is set to `navigate_w_replanning_and_recovery.xml` (qre_go2 pattern) so it can **replan and try recoveries** instead of freezing permanently when blocked.
+`minidog_frontier_explorer` (`frontier_explore.py`):
 
-#### Frontier exploration
-`minidog_frontier_explorer`:
-- subscribes: `/map`, `/autonomy_enabled`
-  - finds frontier cells (free cells adjacent to unknown)
-  - sends `NavigateToPose` goals when autonomy is enabled
-  - on ABORTED goals, it blacklists the area temporarily to avoid repeatedly hitting the same obstacle/goal
+**Goal selection**:
+1. Find frontier cells (free cells adjacent to unknown) in `/map`
+2. Cluster via 8-connected BFS, discard clusters < 5 cells
+3. For each cluster, sample cells and check safety (no occupied cell within 5-cell margin)
+4. Pick the nearest safe, non-blocked cell to the robot (via TF lookup)
 
+**Robustness mechanisms**:
+- **Goal safety margin**: 5 cells (0.25m) clearance from occupied cells prevents goals near walls
+- **Blocked goal list**: aborted/timed-out goals are blacklisted (1.5m radius, 90s TTL)
+- **Costmap clearing**: after 3 consecutive aborts, calls `clear_entirely_*_costmap` services
+- **Unstick mechanism**: after 6 consecutive aborts, publishes reverse `cmd_vel` for 4s then clears costmaps
+- **Wall-time timeout**: goals stuck for 30s are canceled
+- **Completion detection**: 15 consecutive ticks with no frontier cells triggers `EXPLORATION COMPLETE`
 
-### Observability and UI
+**Distinguishes "no frontiers" from "all blocked"**: when frontiers exist but all are blocked, the blacklist is cleared and costmaps refreshed instead of declaring completion.
 
-#### RViz
-`rviz/robot.rviz` includes:
-- `/map`, `/scan`, RobotModel, TF
-- Nav2 visualization:
-  - Goal marker: `/goal_pose`
-  - Plans: `/plan`, `/local_plan`
-  - Costmaps: `/global_costmap/costmap_raw`, `/local_costmap/costmap_raw`
-  - Footprint: `/local_costmap/published_footprint`
+### Simulation world
 
-#### Streamlit web UI (optional)
-The web UI node (`/minidog_webapp`) provides:
-- control: publish `/autonomy_enabled` and `/cmd_vel_manual`
-- monitoring: subscribes to `/scan`, `/map`, `/tf`, `/wheel_odom`, `/cmd_vel*`, `/autonomy_enabled`
+`minidog_world.sdf`: three 6x6m rooms connected by 1.5m doorways.
+- Physics: 4ms step, 1x real-time factor
+- Room 1: spawn room, no obstacles
+- Room 2: east, one small box obstacle
+- Room 3: south, one small cylinder obstacle
 
-### Logging model (quiet by default)
+### DDS configuration
 
-Bringup defaults:
-- `quiet_terminal:=true`
-- `log_level:=warn`
-- sets `RCUTILS_LOGGING_BUFFERED_STREAM=1` (qre_go2 pattern)
+`config/fastdds_no_shm.xml` disables shared-memory transport (UDP only) to avoid WSL2 issues.
 
-Most node output is routed to ROS log files under `~/.ros/log/...` for a cleaner main terminal.
-
-### Architecture diagram (control + data flow)
+### Architecture diagram
 
 ```mermaid
 flowchart LR
-  subgraph user[UserInterfaces]
-    WebUI[StreamlitWebUI]
-    Rqt[RqtTeleopOrPublisher]
-    Rviz[Rviz]
+  subgraph user[User Interfaces]
+    WebUI[Streamlit Web UI]
+    Rviz[RViz]
   end
 
   subgraph sim[Simulation]
-    Gazebo[GazeboIgnition]
-    Ackermann[AckermannSteeringPlugin]
+    Gazebo[Gazebo Fortress]
   end
 
-  subgraph bridge[TransportBridge]
-    GzBridge[ros_gz_bridge_parameter_bridge]
+  subgraph bridge[Transport]
+    GzBridge[ros_gz_bridge]
   end
 
-  subgraph core[CoreROSGraph]
-    Mux[minidog_cmd_mux]
-    RF2O[rf2o_laser_odometry_node]
+  subgraph core[ROS Graph]
+    Mux[cmd_vel_mux]
+    Odom[scan_odom / rf2o]
     Slam[slam_toolbox]
-    Explorer[minidog_frontier_explorer]
-    Nav2[Nav2Stack]
+    Explorer[frontier_explorer]
+    Nav2[Nav2 Stack]
   end
 
-  Rqt -->|cmd_vel_manual| Mux
   WebUI -->|cmd_vel_manual| Mux
   WebUI -->|autonomy_enabled| Mux
   WebUI -->|autonomy_enabled| Explorer
 
   Nav2 -->|cmd_vel_nav| Mux
+  Explorer -->|NavigateToPose| Nav2
+  Explorer -->|cmd_vel_nav unstick| Mux
   Mux -->|cmd_vel| GzBridge
-  GzBridge -->|model/minidog/cmd_vel| Gazebo
-  Gazebo --> Ackermann
+  GzBridge --> Gazebo
 
-  Gazebo -->|minidog/ouster/points| GzBridge
-  GzBridge -->|scan| RF2O
+  Gazebo -->|scan, clock, odom| GzBridge
+  GzBridge -->|scan| Odom
   GzBridge -->|scan| Slam
+  GzBridge -->|scan| Nav2
 
-  RF2O -->|odom TF odom to base| Nav2
-  Slam -->|map TF map to odom| Nav2
+  Odom -->|odom TF| Nav2
+  Slam -->|map TF| Nav2
   Slam -->|map| Explorer
-
-  Slam -->|map| Rviz
-  GzBridge -->|scan| Rviz
-  ```
-
-### Node/interface summary
-
-#### `minidog_sim` bringup components
-
-- `ign gazebo` (process)
-  - **state**: running
-  - **interface**: Gazebo sim + sensors
-- `ros_gz_bridge/parameter_bridge`
-  - **state**: running
-  - **in/out**: `/cmd_vel`, `/scan`, `/wheel_odom`, `/clock`, `/joint_states`, optionally `/tf`
-- `robot_state_publisher`
-  - **state**: running
-  - **out**: TF for URDF links (`frame_prefix=minidog/`)
-- `tf2_ros/static_transform_publisher`
-  - **state**: running
-  - **out**: `minidog/base_footprint -> minidog/base_footprint/ouster`
-- `rviz2`
-  - **state**: running (optional)
-  - **in**: `/map`, `/scan`, TF, Nav2 displays
-
-#### `rf2o_laser_odometry_node` (when `odom_source:=scan`)
-- **state**: running
-- **in**: `/scan`
-- **out**: `/odom`, TF `minidog/odom -> minidog/base_footprint`
-
-#### `slam_toolbox` (when enabled)
-- **state**: running
-- **in**: `/scan`, TF
-- **out**: `/map`, TF `map -> minidog/odom`
-
-#### `minidog_cmd_mux`
-- **state**: running
-- **in**: `/cmd_vel_manual`, `/cmd_vel_nav`, `/autonomy_enabled`
-- **out**: `/cmd_vel`
-
-#### Nav2 nodes (when enabled)
-- **state model**: lifecycle-managed (configured/active)
-- **in**: `/map`, `/scan`, `/odom`, TF
-- **out**: `/cmd_vel_nav`, plus plans/costmaps/footprint topics for visualization
-
-#### `minidog_frontier_explorer` (when enabled)
-- **state**: idle unless `/autonomy_enabled==true`
-- **in**: `/map`, `/autonomy_enabled`
-- **out**: NavigateToPose goals (action client)
-
-#### Streamlit web node `/minidog_webapp` (when enabled)
-- **state**: running
-- **in**: various monitoring topics
-- **out**: `/autonomy_enabled`, `/cmd_vel_manual`
-
-
+```

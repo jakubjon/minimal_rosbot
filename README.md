@@ -1,174 +1,116 @@
 # minidog_sim (ROS 2 Humble + Gazebo Fortress)
 
-Colcon workspace containing a minimal 4-wheel **Ackermann** robot simulated in **Gazebo Fortress / Ignition Gazebo 6**, driven by **ROS 2 `/cmd_vel`**, and visualized in **RViz**.
+Minimal 4-wheel **Ackermann** robot simulation with **fully autonomous frontier exploration**. The robot starts in a 3-room arena, explores all accessible space using SLAM + Nav2 + a custom frontier explorer, and announces completion when done.
 
-This repo is a **sandbox** designed to follow the modular integration logic from `qre_go2/` (reference only) while using a different odometry source:
-- **qre_go2 reference**: modular launches, strict TF ownership, stable topic remappings.
-- **minidog difference**: odometry can come from **scan matching** via **`rf2o_laser_odometry`** (vendored under `src/third_party/`).
+Stack: **ROS 2 Humble**, **Gazebo Fortress (Ignition 6)**, **slam_toolbox**, **Nav2**, **Streamlit web UI**.
 
-Ultimate target: **autonomous exploration of unknown space while building a map** (online SLAM + Nav2 + frontier exploration), with **manual mode as the default**.
-
-## Build
-```bash
-cd /home/jjon/ROBOPES/minimal
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install 
-```
-
-## Run
+## Quick start
 
 ```bash
 cd /home/jjon/ROBOPES/minimal
-source /opt/ros/humble/setup.bash
-. install/setup.bash
-ros2 launch minidog_sim bringup.launch.py
+./run.sh
 ```
 
-Key launch args:
-- `odom_source`: `wheel | scan | scan_matcher`
-- `enable_slam`: start `slam_toolbox`
-- `enable_nav2`: start Nav2 stack
-- `enable_explore`: start frontier exploration node
-- `enable_web`: start Streamlit UI
-- `quiet_terminal`: route most node output into log files
-- `log_level`: Nav2 and bridge log level (`warn` default)
+`run.sh` kills zombie processes from previous runs, builds the workspace, and launches the full stack in headless mode with autonomy auto-enabled. The robot starts exploring immediately. Watch the terminal for `EXPLORATION COMPLETE`.
 
-This launch file first cleans up common orphan processes (Gazebo + bridges) and then starts:
-- Gazebo GUI + spawns the robot
-- ros_gz bridges (`/cmd_vel`, `/clock`, `/joint_states`, `/odom`, `/tf`)
-- `robot_state_publisher`
-- RViz (with correct TF prefix)
+Web UI available at `http://localhost:8501`.
 
-
-### Logging (quiet terminal by default)
-
-By default, bringup runs with a **quiet terminal** and routes most node output into ROS log files under `~/.ros/log/...`.
-
-Useful args:
+## Build (manual)
 
 ```bash
-# Defaults:
-#   quiet_terminal:=true
-#   log_level:=warn
+cd /home/jjon/ROBOPES/minimal
+git submodule update --init --recursive
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+```
+
+## Launch (manual)
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch minidog_sim bringup.launch.py \
+    odom_source:=wheel \
+    enable_slam:=true \
+    enable_nav2:=true \
+    enable_explore:=true \
+    enable_web:=true \
+    enable_rviz:=false \
+    headless:=true
+```
+
+### Key launch arguments
+
+| Argument | Default | Description |
+|---|---|---|
+| `odom_source` | `scan` | `wheel` (Gazebo GT), `scan` (rf2o), `scan_matcher` |
+| `enable_slam` | `true` | Start `slam_toolbox` for mapping |
+| `enable_nav2` | `false` | Start Nav2 navigation stack |
+| `enable_explore` | `false` | Start frontier exploration node |
+| `enable_web` | `false` | Start Streamlit web UI on port 8501 |
+| `enable_rviz` | `true` | Start RViz visualization |
+| `headless` | `false` | Run Gazebo without GUI (server-only) |
+| `quiet_terminal` | `true` | Route node output to log files |
+| `log_level` | `warn` | Nav2/bridge log verbosity |
+
+### Staggered startup
+
+Components start in phases to avoid race conditions:
+- **0s**: Gazebo + bridge + TF + odometry + mux
+- **5s**: SLAM
+- **10s**: Nav2 (+ 5s internal lifecycle manager delay)
+- **20s**: Frontier explorer + web UI
+
+### Logging
+
+Most output goes to `~/.ros/log/latest/`. For verbose terminal:
+
+```bash
 ros2 launch minidog_sim bringup.launch.py quiet_terminal:=false log_level:=info
 ```
 
-Tip: after a run, check `~/.ros/log/latest/` to see per-node logs.
+## World
 
-### Web UI (Streamlit)
+Three-room arena (`minidog_world.sdf`):
+- **Room 1** (6x6m): robot spawn at origin
+- **Room 2** (6x6m): east of Room 1, 1.5m doorway at y=0
+- **Room 3** (6x6m): south of Room 1, 1.5m doorway at x=0
+- Small obstacles in Rooms 2 and 3
 
-This repo includes a small Streamlit UI for:
-- switching **manual ↔ autonomy** (via `/autonomy_enabled`)
-- publishing **manual /cmd_vel_manual**
-- monitoring whether key topics are being received (with “OK” freshness indicators)
+## Autonomous exploration
 
-Run:
+Autonomy is auto-enabled via `run.sh`. The frontier explorer:
+1. Finds frontier cells (free space adjacent to unknown) in the SLAM map
+2. Clusters them and picks the nearest **safe** cell (away from walls)
+3. Sends `NavigateToPose` goals to Nav2
+4. Handles aborts with costmap clearing and an unstick (reverse) mechanism
+5. Announces `EXPLORATION COMPLETE` when no frontiers remain for 15 consecutive ticks
 
-```bash
-cd /home/jjon/ROBOPES/minimal
-source /opt/ros/humble/setup.bash
-. install/setup.bash
-python3 -m streamlit run src/minidog_sim/webapp/app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true
-```
+### Manual override
 
-Or start it with bringup:
+`cmd_vel_mux` gates between manual and autonomous control:
+- `/cmd_vel_manual`: manual input
+- `/cmd_vel_nav`: Nav2 output
+- `/cmd_vel`: final to Gazebo
+- `/autonomy_enabled` (`Bool`): mode switch
 
-```bash
-ros2 launch minidog_sim bringup.launch.py enable_web:=true web_port:=8501
-```
-
-
-### Manual drive (default)
-
-This repo uses `minidog_cmd_mux` to ensure **manual is the default** and autonomous control is only active when explicitly enabled:
-- **Manual input**: `/cmd_vel_manual`
-- **Autonomous input (Nav2)**: `/cmd_vel_nav`
-- **Output to robot / sim**: `/cmd_vel`
-- **Enable switch**: `/autonomy_enabled` (`std_msgs/msg/Bool`)
-
-When `/autonomy_enabled` is `false`, `/cmd_vel_manual` controls the robot. When `true`, `/cmd_vel_nav` controls the robot.
-
-```bash
-ros2 topic pub /cmd_vel_manual geometry_msgs/msg/Twist "{linear: {x: 0.5}, angular: {z: 0.2}}" -r 10 -t 2
-```
-
-### Scan odometry (rf2o) + SLAM
-
-This repo is set up to use **rf2o scan-matching odometry** as the preferred odom source.
-
-What this means (TF ownership):
-- rf2o publishes **`minidog/odom -> minidog/base_footprint`**
-- slam_toolbox publishes **`map -> minidog/odom`**
-- Gazebo wheel odometry is kept only as **`/wheel_odom`** for debugging.
-
-#### Build rf2o (vendored)
-
-rf2o is included as a git submodule under `src/third_party/rf2o_laser_odometry` and built as part of the workspace.
-
-After cloning this repo, fetch submodules:
-
-```bash
-git submodule update --init --recursive
-```
-
-```bash
-cd /home/jjon/ROBOPES/minimal
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --base-paths src/minidog_sim src/minidog_cmd_mux src/minidog_explore src/third_party/rf2o_laser_odometry
-. install/setup.bash
-ros2 pkg executables rf2o_laser_odometry
-```
-
-#### Run with rf2o
-
-Use scan odometry by setting `odom_source:=scan`:
-
-```bash
-ros2 launch minidog_sim bringup.launch.py odom_source:=scan
-```
-
-#### rf2o parameters (what we set for simulation)
-
-rf2o is configured in `src/minidog_sim/launch/scan_odom.launch.py` with simulation-friendly defaults:
-- `laser_scan_topic: /scan`
-- `odom_topic: /odom` (rf2o default is `/odom_rf2o`, but we standardize on `/odom`)
-- `odom_frame_id: minidog/odom`
-- `base_frame_id: minidog/base_footprint`
-- `publish_tf: true`
-- `init_pose_from_topic: ""` (we don’t have ground-truth init pose in this sim; rf2o should start at identity)
-
-### Enable autonomous frontier exploration (manual activation)
-
-Start Nav2 + frontier exploration (recommended with scan odometry):
-
-```bash
-ros2 launch minidog_sim bringup.launch.py odom_source:=scan enable_nav2:=true enable_explore:=true
-```
-
-Autonomy is **off by default**. Enable it:
-
-```bash
-ros2 topic pub /autonomy_enabled std_msgs/msg/Bool "{data: true}" -r 2
-```
-
-Disable it (back to manual):
+Override via web UI or CLI:
 
 ```bash
 ros2 topic pub /autonomy_enabled std_msgs/msg/Bool "{data: false}" -r 2
+ros2 topic pub /cmd_vel_manual geometry_msgs/msg/Twist "{linear: {x: 0.5}, angular: {z: 0.2}}" -r 10
 ```
 
-Notes:
-- Nav2 velocity output is `/cmd_vel_nav`. Manual input is `/cmd_vel_manual`. The mux publishes the final `/cmd_vel` that Gazebo consumes. Avoid publishing directly to `/cmd_vel` from teleop to prevent conflicts.
-- Wheel odometry from Gazebo is bridged to `/wheel_odom` for debugging. When using `odom_source:=scan`, Gazebo TF bridging is disabled to avoid TF conflicts.
-- Nav2 is configured to use a **replanning + recovery behavior tree** so it can try to recover (spin/backup/etc) instead of freezing permanently when blocked.
+## Odometry sources
 
-## RViz navigation visualization
+| Source | Flag | Notes |
+|---|---|---|
+| Wheel (Gazebo GT) | `odom_source:=wheel` | Recommended for simulation |
+| rf2o scan matching | `odom_source:=scan` | Can drift in featureless areas |
+| Laser scan matcher | `odom_source:=scan_matcher` | Experimental |
 
-`rviz/robot.rviz` includes extra Nav2 visualization by default:
-- current **goal** (`/goal_pose`)
-- **global plan** (`/plan`) and **local plan** (`/local_plan`)
-- **global/local costmaps** (`/global_costmap/costmap_raw`, `/local_costmap/costmap_raw`)
-- **footprint** (`/local_costmap/published_footprint`)
+Active odom source publishes `minidog/odom -> minidog/base_footprint` TF. SLAM publishes `map -> minidog/odom`.
 
+## RViz
 
-
+`rviz/robot.rviz` includes Nav2 visualization: goal pose, global/local plans, costmaps, footprint.

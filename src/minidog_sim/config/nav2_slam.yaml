@@ -8,41 +8,57 @@
     odom_frame: minidog/odom
 
     # Shared costmap params
-    transform_tolerance: 0.2
+    transform_tolerance: 1.0
 
 controller_server:
   ros__parameters:
     use_sim_time: true
-    controller_frequency: 10.0
+    # Reduce from 10Hz to 5Hz — less CPU pressure in WSL2+Gazebo.
+    controller_frequency: 5.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # Allow 10s of controller failures before giving up — WSL2 can cause
+    # momentary stalls that shouldn't abort the goal.
+    failure_tolerance: 10.0
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.2
-      movement_time_allowance: 10.0
+      required_movement_radius: 0.10
+      movement_time_allowance: 30.0
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
+      xy_goal_tolerance: 0.35
+      yaw_goal_tolerance: 0.50
       stateful: true
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.4
-      max_linear_accel: 1.0
+      desired_linear_vel: 0.25
+      max_linear_accel: 0.5
       lookahead_dist: 0.8
       min_lookahead_dist: 0.4
-      max_lookahead_dist: 1.2
+      max_lookahead_dist: 1.5
       use_velocity_scaled_lookahead_dist: true
+      # Ackermann robot cannot rotate in place — disable in-place rotation.
+      use_rotate_to_heading: false
       rotate_to_heading_angular_vel: 1.2
-      allow_reversing: false
+      rotate_to_heading_min_angle: 6.28
+      # Ackermann needs reversing for recovery (can't spin in place).
+      allow_reversing: true
+      # Collision detection: be strict to prevent getting stuck near walls.
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      # Cost-regulated velocity scaling (slow near obstacles)
+      use_cost_regulated_linear_velocity_scaling: true
+      cost_scaling_dist: 0.8
+      cost_scaling_gain: 2.0
+      regulated_linear_scaling_min_radius: 0.8
+      regulated_linear_scaling_min_speed: 0.05
 
 planner_server:
   ros__parameters:
@@ -51,8 +67,8 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 0.5
-      use_astar: false
+      tolerance: 1.0
+      use_astar: true
       allow_unknown: true
 
 bt_navigator:
@@ -61,10 +77,10 @@ bt_navigator:
     global_frame: map
     robot_base_frame: minidog/base_footprint
     odom_topic: /odom
-    bt_loop_duration: 10
+    bt_loop_duration: 100
     default_server_timeout: 20
-    # qre_go2 pattern: use replanning + recovery BT so the robot doesn't just freeze at obstacles.
-    default_bt_xml_filename: "navigate_w_replanning_and_recovery.xml"
+    # Custom BT for Ackermann: replanning + recovery without Spin (can't rotate in place).
+    # BT XML path is set in nav2.launch.py via default_nav_to_pose_bt_xml parameter.
 
 behavior_server:
   ros__parameters:
@@ -73,6 +89,9 @@ behavior_server:
     robot_base_frame: minidog/base_footprint
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
+    # Ackermann can't truly spin, but "spin" must be registered so the
+    # default navigate_through_poses BT can load. It will fail at runtime
+    # and the BT will move to the next recovery action (wait/backup).
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
       plugin: "nav2_behaviors/Spin"
@@ -89,28 +108,23 @@ waypoint_follower:
     loop_rate: 10
     stop_on_failure: true
 
-velocity_smoother:
-  ros__parameters:
-    use_sim_time: true
-    smoothing_frequency: 10.0
-    scale_velocities: false
-    feedback: "OPEN_LOOP"
-    max_velocity: [0.8, 0.0, 1.8]
-    min_velocity: [-0.2, 0.0, -1.8]
-    max_accel: [1.5, 0.0, 3.0]
-    max_decel: [-1.5, 0.0, -3.0]
-    odom_topic: /odom
-
 global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: true
       global_frame: map
       robot_base_frame: minidog/base_footprint
-      update_frequency: 2.0
-      publish_frequency: 1.0
+      # Robot footprint (approx 0.45m x 0.35m Ackermann body).
+      robot_radius: 0.22
+      update_frequency: 1.0
+      publish_frequency: 0.5
       resolution: 0.05
       track_unknown_space: true
+      # Use rolling window to avoid SLAM map initialization issues.
+      # The 20x20m window covers the entire 3-room arena.
+      rolling_window: true
+      width: 20
+      height: 20
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -126,7 +140,10 @@ global_costmap:
           data_type: "LaserScan"
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.55
+        # Must be >= inscribed_radius (0.225) to avoid collision paths.
+        # Lethal zone extends 0.225m from walls; cost decays to 0 at 0.25m.
+        # Doorway 1.5m: non-lethal width = 1.5 - 2*0.225 = 1.05m (safe).
+        inflation_radius: 0.25
         cost_scaling_factor: 3.0
 
 local_costmap:
@@ -135,11 +152,10 @@ local_costmap:
       use_sim_time: true
       global_frame: minidog/odom
       robot_base_frame: minidog/base_footprint
-      update_frequency: 10.0
-      publish_frequency: 5.0
+      robot_radius: 0.22
+      update_frequency: 2.0
+      publish_frequency: 1.0
       rolling_window: true
-      # NOTE: Some Nav2 builds declare these as integer parameters. Keep them as ints to avoid
-      # InvalidParameterTypeException on startup.
       width: 6
       height: 6
       resolution: 0.05
@@ -155,7 +171,7 @@ local_costmap:
           data_type: "LaserScan"
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.55
+        inflation_radius: 0.25
         cost_scaling_factor: 3.0
 
 lifecycle_manager:
@@ -168,5 +184,9 @@ lifecycle_manager:
       - bt_navigator
       - behavior_server
       - waypoint_follower
-      - velocity_smoother
-
+    node_names:
+      - controller_server
+      - planner_server
+      - bt_navigator
+      - behavior_server
+      - waypoint_follower

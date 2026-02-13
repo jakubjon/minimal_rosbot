@@ -13,15 +13,11 @@ def generate_launch_description():
     # Requires: pip install -r $(ros2 pkg prefix minidog_sim)/share/minidog_sim/webapp/requirements.txt
     streamlit = ExecuteProcess(
         cmd=[
-            "bash",
-            "-lc",
-            "python3 -m streamlit run "
-            + str(app_path)
-            + " --server.address "
-            + str(host)
-            + " --server.port "
-            + str(port)
-            + " --server.headless true",
+            "python3", "-m", "streamlit", "run",
+            app_path,
+            "--server.address", host,
+            "--server.port", port,
+            "--server.headless", "true",
         ],
         output="screen",
     )

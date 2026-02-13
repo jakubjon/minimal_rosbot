@@ -2,7 +2,7 @@
 build/
 install/
 log/
-qre_go2/
+# qre_go2 is a symlink to ../qre_go2 (not a local copy)
 
 # Python cache
 __pycache__/

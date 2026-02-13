@@ -35,7 +35,9 @@ class CmdVelMux(Node):
             self.get_parameter("manual_override_hold_sec").get_parameter_value().double_value
         )
 
-        self.autonomy_enabled = False
+        # Start with autonomy enabled so the robot explores immediately.
+        self.declare_parameter("start_enabled", True)
+        self.autonomy_enabled = self.get_parameter("start_enabled").get_parameter_value().bool_value
         self.last_auto_msg_time = None
         self.last_auto_cmd = Twist()
         self.last_manual_msg_time = None
@@ -47,16 +49,35 @@ class CmdVelMux(Node):
         self.sub_manual = self.create_subscription(Twist, manual_topic, self._on_manual, 10)
         self.sub_auto = self.create_subscription(Twist, auto_topic, self._on_auto, 10)
 
+        # Safety timer: publish stop if autonomy is enabled but Nav2 stops sending commands.
+        self._auto_timeout_sent_stop = False
+        self.create_timer(0.25, self._check_auto_timeout)
+
         self.get_logger().info(
             f"cmd_vel_mux: manual={manual_topic} auto={auto_topic} out={output_topic} enable={enable_topic}"
         )
 
     def _on_enable(self, msg: Bool):
         self.autonomy_enabled = bool(msg.data)
+        if not self.autonomy_enabled:
+            self._auto_timeout_sent_stop = False
+
+    def _check_auto_timeout(self):
+        """If autonomy is enabled and Nav2 stops sending, publish a stop for safety."""
+        if not self.autonomy_enabled or self.last_auto_msg_time is None:
+            return
+        age = (self.get_clock().now() - self.last_auto_msg_time).nanoseconds / 1e9
+        if age > self.auto_timeout_sec and not self._auto_timeout_sent_stop:
+            self.pub.publish(Twist())  # zero velocity
+            self._auto_timeout_sent_stop = True
+            self.get_logger().warn(
+                f"No auto cmd_vel for {age:.1f}s (timeout={self.auto_timeout_sec}s); sent stop"
+            )
 
     def _on_auto(self, msg: Twist):
         self.last_auto_cmd = msg
         self.last_auto_msg_time = self.get_clock().now()
+        self._auto_timeout_sent_stop = False
         if self.autonomy_enabled:
             if self.manual_override and (self.last_manual_msg_time is not None):
                 dt = (self.get_clock().now() - self.last_manual_msg_time).nanoseconds / 1e9
@@ -91,6 +112,9 @@ def main():
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 

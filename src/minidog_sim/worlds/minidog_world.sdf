@@ -2,8 +2,9 @@
 <sdf version="1.6">
   <!-- Use a unique world name so /world/<name>/clock doesn't collide with other running sims -->
   <world name="minidog_world">
-    <physics name="1ms" type="ignored">
-      <max_step_size>0.001</max_step_size>
+    <physics name="4ms" type="ignored">
+      <max_step_size>0.004</max_step_size>
+      <!-- 1x real-time: ensures stable timing for controller + SLAM -->
       <real_time_factor>1.0</real_time_factor>
     </physics>
     <plugin filename="ignition-gazebo-physics-system" name="gz::sim::systems::Physics"/>
@@ -57,105 +58,222 @@
       </link>
     </model>
 
-    <!-- Simple arena walls + a few obstacles for SLAM testing -->
-    <model name="wall_north">
+    <!-- ============================================================
+         Three-room exploration arena (no obstacles in Room 1).
+         Robot starts in Room 1 (center). 1.5m doorways connect to
+         Room 2 (east) and Room 3 (south).
+         ============================================================ -->
+
+    <!-- ===== Room 1: 6x6 m, center at origin ===== -->
+
+    <!-- North wall (full, y=3) -->
+    <model name="r1_wall_north">
       <static>true</static>
       <pose>0 3 0.25 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>6 0.1 0.5</size></box></geometry>
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>6 0.1 0.5</size></box></geometry>
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
           <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
     </model>
 
-    <model name="wall_south">
-      <static>true</static>
-      <pose>0 -3 0.25 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>6 0.1 0.5</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>6 0.1 0.5</size></box></geometry>
-          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
-        </visual>
-      </link>
-    </model>
-
-    <model name="wall_east">
-      <static>true</static>
-      <pose>3 0 0.25 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.1 6 0.5</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.1 6 0.5</size></box></geometry>
-          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
-        </visual>
-      </link>
-    </model>
-
-    <model name="wall_west">
+    <!-- West wall (full, x=-3) -->
+    <model name="r1_wall_west">
       <static>true</static>
       <pose>-3 0 0.25 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>0.1 6 0.5</size></box></geometry>
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.1 6 0.5</size></box></geometry>
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
           <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
     </model>
 
-    <model name="obstacle_box_1">
+    <!-- South wall with doorway (gap at x=0, 1.5m wide) -->
+    <model name="r1_wall_south_left">
       <static>true</static>
-      <pose>1.0 0.6 0.15 0 0 0.2</pose>
+      <pose>-1.875 -3 0.25 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>0.6 0.3 0.3</size></box></geometry>
+          <geometry><box><size>2.25 0.1 0.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.6 0.3 0.3</size></box></geometry>
-          <material><diffuse>0.8 0.2 0.2 1</diffuse></material>
+          <geometry><box><size>2.25 0.1 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="r1_wall_south_right">
+      <static>true</static>
+      <pose>1.875 -3 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>2.25 0.1 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>2.25 0.1 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
     </model>
 
-    <model name="obstacle_box_2">
+    <!-- East wall with doorway (gap at y=0, 1.5m wide) -->
+    <model name="r1_wall_east_top">
       <static>true</static>
-      <pose>-1.2 -0.8 0.2 0 0 -0.4</pose>
+      <pose>3 1.875 0.25 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>0.4 0.4 0.4</size></box></geometry>
+          <geometry><box><size>0.1 2.25 0.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.4 0.4 0.4</size></box></geometry>
-          <material><diffuse>0.2 0.6 0.9 1</diffuse></material>
+          <geometry><box><size>0.1 2.25 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="r1_wall_east_bottom">
+      <static>true</static>
+      <pose>3 -1.875 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 2.25 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 2.25 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
         </visual>
       </link>
     </model>
 
-    <model name="obstacle_cylinder_1">
+    <!-- ===== Room 2: 6x6 m, east of Room 1 ===== -->
+
+    <!-- North wall (y=3, x=3..9) -->
+    <model name="r2_wall_north">
       <static>true</static>
-      <pose>0.2 -1.4 0.2 0 0 0</pose>
+      <pose>6 3 0.25 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><cylinder><radius>0.18</radius><length>0.4</length></cylinder></geometry>
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><cylinder><radius>0.18</radius><length>0.4</length></cylinder></geometry>
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- South wall (y=-3, x=3..9) -->
+    <model name="r2_wall_south">
+      <static>true</static>
+      <pose>6 -3 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- East wall (x=9) -->
+    <model name="r2_wall_east">
+      <static>true</static>
+      <pose>9 0 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== Room 3: 6x6 m, south of Room 1 ===== -->
+
+    <!-- South wall (y=-9) -->
+    <model name="r3_wall_south">
+      <static>true</static>
+      <pose>0 -9 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>6.2 0.1 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- East wall (x=3, y=-3..-9) -->
+    <model name="r3_wall_east">
+      <static>true</static>
+      <pose>3 -6 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- West wall (x=-3, y=-3..-9) -->
+    <model name="r3_wall_west">
+      <static>true</static>
+      <pose>-3 -6 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 6.2 0.5</size></box></geometry>
+          <material><diffuse>0.7 0.7 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Small obstacle in Room 2 (away from doorway) -->
+    <model name="obstacle_r2">
+      <static>true</static>
+      <pose>7.0 1.5 0.15 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.4 0.4 0.3</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.4 0.4 0.3</size></box></geometry>
+          <material><diffuse>0.9 0.6 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Small obstacle in Room 3 (away from doorway) -->
+    <model name="obstacle_r3">
+      <static>true</static>
+      <pose>-1.0 -7.0 0.2 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.2</radius><length>0.4</length></cylinder></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.2</radius><length>0.4</length></cylinder></geometry>
           <material><diffuse>0.2 0.8 0.3 1</diffuse></material>
         </visual>
       </link>
     </model>
   </world>
 </sdf>
-
-

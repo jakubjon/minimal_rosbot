@@ -10,6 +10,12 @@ slam_toolbox:
 
     # Input scan
     scan_topic: "/scan"
+    min_laser_range: 0.1    # match lidar <min>0.1</min> in SDF
+    # Process every 5th scan (10Hz lidar -> 2Hz SLAM) to reduce CPU load
+    throttle_scans: 5
+
+    # Tolerate small TF delays
+    transform_timeout: 0.5
 
     # Reasonable defaults for a small indoor world
     resolution: 0.05

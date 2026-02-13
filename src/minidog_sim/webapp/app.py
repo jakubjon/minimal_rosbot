@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -78,8 +78,8 @@ class MinidogWebNode(Node):
         self._sub(Twist, topics["cmd_vel"], "cmd_vel", qos=QoSProfile(depth=10))
         self._sub(Twist, topics["cmd_vel_manual"], "cmd_vel_manual", qos=QoSProfile(depth=10))
         self._sub(Twist, topics["cmd_vel_nav"], "cmd_vel_nav", qos=QoSProfile(depth=10))
-        self._sub(LaserScan, topics["scan"], "scan", qos=QoSProfile(depth=10))
-        self._sub(Odometry, topics["wheel_odom"], "wheel_odom", qos=QoSProfile(depth=10))
+        self._sub(LaserScan, topics["scan"], "scan", qos=qos_profile_sensor_data)
+        self._sub(Odometry, topics["wheel_odom"], "wheel_odom", qos=qos_profile_sensor_data)
 
         # Map is often transient-local
         map_qos = QoSProfile(depth=1)
@@ -179,34 +179,39 @@ with col1:
     )
     st.write(f"Autonomy (observed): **{observed_auto if observed_auto is not None else '—'}**")
 
-    # Single autonomy toggle
-    autonomy_enabled = st.toggle("Enable autonomy", key="autonomy_enabled_ui")
-
-    # Publish on transitions only.
-    if st.session_state.last_published_autonomy is None:
-        st.session_state.last_published_autonomy = autonomy_enabled
-    elif autonomy_enabled != st.session_state.last_published_autonomy:
-        # ON: send zero manual once, then set autonomy true
-        if autonomy_enabled:
+    # Callbacks run BEFORE the next script rerun, so they can safely modify
+    # widget-bound session_state keys.
+    def _on_autonomy_toggle():
+        enabled = st.session_state.autonomy_enabled_ui
+        if enabled:
             node.publish_stop()
             node.set_autonomy_enabled(True)
-        # OFF: set autonomy false, send zero manual, reset sliders
         else:
             node.set_autonomy_enabled(False)
             node.publish_stop()
             st.session_state.manual_lin_x = 0.0
             st.session_state.manual_ang_z = 0.0
+        st.session_state.last_published_autonomy = enabled
 
-        st.session_state.last_published_autonomy = autonomy_enabled
-
-    # Stop button: switches to manual, sends 0, resets sliders, sets toggle OFF
-    if st.button("STOP"):
+    def _on_emergency_stop():
         node.set_autonomy_enabled(False)
         node.publish_stop()
         st.session_state.autonomy_enabled_ui = False
         st.session_state.last_published_autonomy = False
         st.session_state.manual_lin_x = 0.0
         st.session_state.manual_ang_z = 0.0
+
+    # Single autonomy toggle
+    autonomy_enabled = st.toggle(
+        "Enable autonomy", key="autonomy_enabled_ui", on_change=_on_autonomy_toggle
+    )
+
+    # Sync tracking on first run.
+    if st.session_state.last_published_autonomy is None:
+        st.session_state.last_published_autonomy = autonomy_enabled
+
+    # Emergency stop: switches to manual, sends zero velocity, resets UI.
+    st.button("EMERGENCY STOP", on_click=_on_emergency_stop, type="primary")
 
     st.divider()
     st.subheader("Manual cmd_vel")

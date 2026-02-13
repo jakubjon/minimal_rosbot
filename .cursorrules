@@ -1,6 +1,6 @@
 Project intent (minidog_sim):
 - This repo is a sandbox sim, but should be structured to later reuse on real hardware running the qre_go2 stack.
-- Use qre_go2/ as a reference architecture: modular launches, strict TF ownership, stable topics, clear remappings.
+- Use qre_go2/ (symlink to ../qre_go2) as a reference architecture: modular launches, strict TF ownership, stable topics, clear remappings.
 - Odometry source differs from qre_go2: use rf2o_laser_odometry (scan-matching) as the preferred odom source.
 - Default mode is manual driving via /cmd_vel (ROS2 geometry_msgs/Twist). Autonomous mode must be explicitly enabled.
 - Ultimate goal: autonomous exploration of unknown environments while simultaneously building a map (SLAM + Nav2 + frontier exploration).

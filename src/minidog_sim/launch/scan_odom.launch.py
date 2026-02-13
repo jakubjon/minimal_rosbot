@@ -10,25 +10,25 @@ def generate_launch_description():
     base_frame = LaunchConfiguration("base_frame")
     scan_topic = LaunchConfiguration("scan_topic")
     odom_topic = LaunchConfiguration("odom_topic")
+    mode = LaunchConfiguration("mode")
 
-    # NOTE:
-    # This requires installing: ros-humble-rf2o-laser-odometry
-    # (we can't sudo-install from this environment).
-    rf2o = Node(
-        package="rf2o_laser_odometry",
-        executable="rf2o_laser_odometry_node",
-        name="rf2o_laser_odometry",
+    # Odometry TF publisher.
+    # - mode=wheel: subscribes to /wheel_odom, publishes proper odom->base TF + /odom
+    # - mode=scan:  publishes identity odom->base TF (SLAM-delegated)
+    scan_odom = Node(
+        package="minidog_scan_odom",
+        executable="scan_odom_node",
+        name="scan_odom",
         output="screen",
         parameters=[
             {"use_sim_time": use_sim_time},
             {"publish_tf": True},
+            {"mode": mode},
             {"odom_frame_id": odom_frame},
             {"base_frame_id": base_frame},
             {"laser_scan_topic": scan_topic},
-            # In this sim we don't have ground-truth / base_pose topic; start at identity.
-            {"init_pose_from_topic": ""},
-            # Ensure rf2o publishes on the expected odom topic.
             {"odom_topic": odom_topic},
+            {"wheel_odom_topic": "/wheel_odom"},
         ],
     )
 
@@ -39,8 +39,7 @@ def generate_launch_description():
             DeclareLaunchArgument("base_frame", default_value="minidog/base_footprint"),
             DeclareLaunchArgument("scan_topic", default_value="/scan"),
             DeclareLaunchArgument("odom_topic", default_value="/odom"),
-            rf2o,
+            DeclareLaunchArgument("mode", default_value="wheel"),
+            scan_odom,
         ]
     )
-
-

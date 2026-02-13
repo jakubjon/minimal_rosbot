@@ -1,5 +1,12 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler, SetEnvironmentVariable
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+    SetEnvironmentVariable,
+    TimerAction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -27,43 +34,53 @@ def generate_launch_description():
     ros_localhost_only = LaunchConfiguration("ros_localhost_only")
     rmw_implementation = LaunchConfiguration("rmw_implementation")
     fastdds_profiles_file = PathJoinSubstitution([pkg_share, "config", "fastdds_no_shm.xml"])
+    headless = LaunchConfiguration("headless")
+    enable_rviz = LaunchConfiguration("enable_rviz")
 
+    # ----------------------------------------------------------------
+    # Phase 1: Gazebo + bridge (start first, need time to initialize)
+    # ----------------------------------------------------------------
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "sim.launch.py"])),
         launch_arguments={
             "world_name": world_name,
             "use_sim_time": use_sim_time,
             "quiet_terminal": quiet_terminal,
+            "headless": headless,
         }.items(),
     )
     bridge = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "bridge.launch.py"])),
-        # If we use scan-matching odom, DO NOT bridge Gazebo TF (it would conflict on minidog/odom).
         launch_arguments={
             "world_name": world_name,
             "use_sim_time": use_sim_time,
-            "bridge_tf": PythonExpression(["'", odom_source, "' == 'wheel'"]),
+            "bridge_tf": "false",
             "quiet_terminal": quiet_terminal,
             "log_level": log_level,
         }.items(),
     )
+
+    # ----------------------------------------------------------------
+    # Phase 2: TF publishers + odom (need bridge for clock)
+    # ----------------------------------------------------------------
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "rviz.launch.py"])),
-        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
-    )
-    slam = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "slam.launch.py"])),
-        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
-        condition=IfCondition(enable_slam),
-    )
-    nav2 = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "nav2.launch.py"])),
         launch_arguments={
             "use_sim_time": use_sim_time,
             "quiet_terminal": quiet_terminal,
-            "log_level": log_level,
+            "enable_rviz_gui": enable_rviz,
         }.items(),
-        condition=IfCondition(enable_nav2),
+    )
+    scan_odom = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "scan_odom.launch.py"])),
+        launch_arguments={
+            "use_sim_time": use_sim_time,
+            "odom_frame": "minidog/odom",
+            "base_frame": "minidog/base_footprint",
+            "scan_topic": "/scan",
+            "odom_topic": "/odom",
+            "mode": odom_source,
+        }.items(),
     )
     mux = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -78,43 +95,6 @@ def generate_launch_description():
         }.items(),
         condition=IfCondition(enable_mux),
     )
-    explore = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([FindPackageShare("minidog_explore"), "launch", "explore.launch.py"])
-        ),
-        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
-        condition=IfCondition(enable_explore),
-    )
-    rqt = ExecuteProcess(
-        cmd=[
-            "bash",
-            "-lc",
-            # Fail-safe: don't crash bringup if rqt isn't installed.
-            # --force-discover helps on some systems where the daemon/graph can be flaky.
-            "command -v rqt >/dev/null 2>&1 && rqt --force-discover || true",
-        ],
-        output="screen",
-        condition=IfCondition(enable_rqt),
-    )
-
-    web = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([pkg_share, "launch", "web.launch.py"])
-        ),
-        launch_arguments={"host": web_host, "port": web_port}.items(),
-        condition=IfCondition(enable_web),
-    )
-    scan_odom = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "scan_odom.launch.py"])),
-        launch_arguments={
-            "use_sim_time": use_sim_time,
-            "odom_frame": "minidog/odom",
-            "base_frame": "minidog/base_footprint",
-            "scan_topic": "/scan",
-            "odom_topic": "/odom",
-        }.items(),
-        condition=IfCondition(PythonExpression(["'", odom_source, "' == 'scan'"])),
-    )
     scan_matcher_odom = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([pkg_share, "launch", "laser_scan_matcher.launch.py"])
@@ -126,40 +106,117 @@ def generate_launch_description():
         condition=IfCondition(PythonExpression(["'", odom_source, "' == 'scan_matcher'"])),
     )
 
-    # One-shot cleanup BEFORE starting anything. This prevents:
-    # - orphaned `ign gazebo server` from previous runs
-    # - orphaned `ros_gz_bridge/parameter_bridge` publishing /clock
+    # ----------------------------------------------------------------
+    # Phase 3: SLAM (needs TF + scan, delay 5s)
+    # ----------------------------------------------------------------
+    slam = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "slam.launch.py"])),
+        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
+        condition=IfCondition(enable_slam),
+    )
+
+    # ----------------------------------------------------------------
+    # Phase 4: Nav2 (needs SLAM map + TF, delay 10s)
+    # ----------------------------------------------------------------
+    nav2 = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "nav2.launch.py"])),
+        launch_arguments={
+            "use_sim_time": use_sim_time,
+            "quiet_terminal": quiet_terminal,
+            "log_level": log_level,
+        }.items(),
+        condition=IfCondition(enable_nav2),
+    )
+
+    # ----------------------------------------------------------------
+    # Phase 5: Explore + Web (needs Nav2 active, delay 15s)
+    # ----------------------------------------------------------------
+    explore = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([FindPackageShare("minidog_explore"), "launch", "explore.launch.py"])
+        ),
+        launch_arguments={"use_sim_time": use_sim_time, "quiet_terminal": quiet_terminal}.items(),
+        condition=IfCondition(enable_explore),
+    )
+    web = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([pkg_share, "launch", "web.launch.py"])
+        ),
+        launch_arguments={"host": web_host, "port": web_port}.items(),
+        condition=IfCondition(enable_web),
+    )
+    rqt = ExecuteProcess(
+        cmd=[
+            "bash",
+            "-lc",
+            "command -v rqt >/dev/null 2>&1 && rqt --force-discover || true",
+        ],
+        output="screen",
+        condition=IfCondition(enable_rqt),
+    )
+
+    # ----------------------------------------------------------------
+    # Cleanup: kill zombies from previous runs
+    # ----------------------------------------------------------------
     cleanup = ExecuteProcess(
         cmd=[
             "bash",
             "-lc",
-            # Use []-patterns so pkill does NOT match its own command line.
-            "pkill -f '[r]os_gz_bridge/parameter_bridge' || true; "
-            "pkill -f '[i]gn gazebo' || true; "
-            "pkill -f 'g[z] sim' || true; "
-            "pkill -f '[r]viz2/rviz2' || true; "
-            "pkill -f '[r]obot_state_publisher/robot_state_publisher' || true; "
-            "pkill -f '[s]lam_toolbox' || true; "
-            "pkill -f '[n]av2_' || true; "
-            "pkill -f '[s]tatic_transform_publisher' || true; "
-            # rf2o process name varies (rf2o_laser_odometry_node / rf2o_laser_odometry)
-            "pkill -f '[r]f2o_laser_odometry_node' || true; "
-            "pkill -f '[r]f2o_laser_odometry' || true; "
-            "pkill -f '[l]aser_scan_matcher' || true; "
-            "pkill -f '[c]md_vel_mux' || true; "
-            "pkill -f '[f]rontier_explore' || true; "
-            "pkill -f '[r]qt' || true; "
-            "pkill -f '[r]os2 daemon' || true; "
-            # Clean up FastDDS SHM artifacts which can make new ROS2 processes hang on WSL2.
+            "for i in 1 2; do "
+            "  pkill -9 -f '[p]arameter_bridge' || true; "
+            "  pkill -9 -f '[i]gn gazebo' || true; "
+            "  pkill -9 -f 'g[z] sim' || true; "
+            "  pkill -9 -f '[r]viz2' || true; "
+            "  pkill -9 -f '[r]obot_state_publisher' || true; "
+            "  pkill -9 -f '[a]sync_slam_toolbox_node' || true; "
+            "  pkill -9 -f '[s]lam_toolbox' || true; "
+            "  pkill -9 -f '[c]ontroller_server' || true; "
+            "  pkill -9 -f '[p]lanner_server' || true; "
+            "  pkill -9 -f '[b]t_navigator' || true; "
+            "  pkill -9 -f '[b]ehavior_server' || true; "
+            "  pkill -9 -f '[w]aypoint_follower' || true; "
+            "  pkill -9 -f '[l]ifecycle_manager' || true; "
+            "  pkill -9 -f '[s]tatic_transform_publisher' || true; "
+            "  pkill -9 -f '[r]f2o_laser_odometry' || true; "
+            "  pkill -9 -f '[l]aser_scan_matcher' || true; "
+            "  pkill -9 -f '[s]can_odom' || true; "
+            "  pkill -9 -f '[c]md_vel_mux' || true; "
+            "  pkill -9 -f '[f]rontier_explore' || true; "
+            "  pkill -9 -f '[s]treamlit' || true; "
+            "  pkill -9 -f '[r]qt' || true; "
+            "  [ $i -eq 1 ] && sleep 1; "
+            "done; "
             "rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_* 2>/dev/null || true",
         ],
         output="screen",
     )
 
-    start_everything_after_cleanup = RegisterEventHandler(
+    # ----------------------------------------------------------------
+    # Staggered launch after cleanup
+    # Phase 1 (0s):  Gazebo + bridge
+    # Phase 2 (0s):  TF publishers + odom + mux
+    # Phase 3 (5s):  SLAM
+    # Phase 4 (10s): Nav2
+    # Phase 5 (20s): Explore + web
+    # ----------------------------------------------------------------
+    start_after_cleanup = RegisterEventHandler(
         OnProcessExit(
             target_action=cleanup,
-            on_exit=[sim, bridge, scan_odom, scan_matcher_odom, mux, rviz, slam, nav2, explore, rqt, web],
+            on_exit=[
+                # Phase 1+2: immediate
+                sim,
+                bridge,
+                scan_odom,
+                scan_matcher_odom,
+                mux,
+                rviz,
+                # Phase 3: SLAM after 5s
+                TimerAction(period=5.0, actions=[slam]),
+                # Phase 4: Nav2 after 10s (SLAM needs time to produce first map)
+                TimerAction(period=10.0, actions=[nav2]),
+                # Phase 5: Explore + web after 20s (Nav2 needs lifecycle bringup)
+                TimerAction(period=20.0, actions=[explore, web, rqt]),
+            ],
         )
     )
 
@@ -173,29 +230,20 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_nav2", default_value="false"),
             DeclareLaunchArgument("enable_mux", default_value="true"),
             DeclareLaunchArgument("enable_explore", default_value="false"),
+            DeclareLaunchArgument("enable_rviz", default_value="true"),
             DeclareLaunchArgument("enable_rqt", default_value="false"),
+            DeclareLaunchArgument("headless", default_value="false"),
             DeclareLaunchArgument("enable_web", default_value="false"),
             DeclareLaunchArgument("web_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_port", default_value="8501"),
-            DeclareLaunchArgument(
-                # wheel: odom->base comes from Gazebo TF (wheel-integrated).
-                # scan:  odom->base comes from scan matching (rf2o), wheel odom is still available as /wheel_odom.
-                # scan_matcher: odom->base comes from scan matching (laser_scan_matcher). Requires a ROS 2 port installed.
-                "odom_source",
-                default_value="wheel",
-            ),
-            # WSL2 can have flaky multicast DDS discovery. Localhost-only makes graph discovery reliable.
+            DeclareLaunchArgument("odom_source", default_value="scan"),
             DeclareLaunchArgument("ros_localhost_only", default_value="0"),
-            # If empty, use default RMW. Set to rmw_fastrtps_cpp if discovery still hangs.
             DeclareLaunchArgument("rmw_implementation", default_value=""),
             SetEnvironmentVariable("ROS_LOCALHOST_ONLY", ros_localhost_only),
             SetEnvironmentVariable("RMW_IMPLEMENTATION", rmw_implementation),
             SetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE", fastdds_profiles_file),
-            # qre_go2 pattern: ensure stdout logs flush line-buffered (better behavior under launch/logging).
             SetEnvironmentVariable("RCUTILS_LOGGING_BUFFERED_STREAM", "1"),
             cleanup,
-            start_everything_after_cleanup,
+            start_after_cleanup,
         ]
     )
-
-

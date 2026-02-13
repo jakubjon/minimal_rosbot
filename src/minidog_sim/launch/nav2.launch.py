@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
+from launch.actions import DeclareLaunchArgument, GroupAction, TimerAction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node, PushRosNamespace
 from launch_ros.substitutions import FindPackageShare
@@ -14,8 +14,12 @@ def generate_launch_description():
     default_params = PathJoinSubstitution(
         [FindPackageShare("minidog_sim"), "config", "nav2_slam.yaml"]
     )
+    bt_xml = PathJoinSubstitution(
+        [FindPackageShare("minidog_sim"), "config", "nav2_bt_ackermann.xml"]
+    )
 
-    nodes = [
+    # Nav2 server nodes (start first)
+    server_nodes = [
         Node(
             package="nav2_controller",
             executable="controller_server",
@@ -38,7 +42,11 @@ def generate_launch_description():
             executable="bt_navigator",
             name="bt_navigator",
             output="log",
-            parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
+            parameters=[
+                nav2_params_file,
+                {"use_sim_time": use_sim_time},
+                {"default_nav_to_pose_bt_xml": bt_xml},
+            ],
             # Ensure Nav2 never publishes directly to /cmd_vel (mux owns /cmd_vel).
             remappings=[("/cmd_vel", "/cmd_vel_nav")],
             arguments=["--ros-args", "--log-level", log_level],
@@ -62,24 +70,24 @@ def generate_launch_description():
             remappings=[("/cmd_vel", "/cmd_vel_nav")],
             arguments=["--ros-args", "--log-level", log_level],
         ),
-        Node(
-            package="nav2_velocity_smoother",
-            executable="velocity_smoother",
-            name="velocity_smoother",
-            output="log",
-            parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
-            remappings=[("/cmd_vel", "/cmd_vel_nav")],
-            arguments=["--ros-args", "--log-level", log_level],
-        ),
-        Node(
-            package="nav2_lifecycle_manager",
-            executable="lifecycle_manager",
-            name="lifecycle_manager",
-            output="log",
-            parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
-            arguments=["--ros-args", "--log-level", log_level],
-        ),
     ]
+
+    # Lifecycle manager: delay 5s to let server nodes fully initialize.
+    # Without this delay, it races the servers and fails to configure them.
+    lifecycle_mgr = Node(
+        package="nav2_lifecycle_manager",
+        executable="lifecycle_manager",
+        name="lifecycle_manager",
+        output="log",
+        parameters=[
+            nav2_params_file,
+            {
+                "use_sim_time": use_sim_time,
+                "bond_timeout": 10.0,
+            },
+        ],
+        arguments=["--ros-args", "--log-level", log_level],
+    )
 
     return LaunchDescription(
         [
@@ -90,10 +98,18 @@ def generate_launch_description():
             GroupAction(
                 [
                     PushRosNamespace(namespace),
-                    *nodes,
+                    *server_nodes,
                 ]
+            ),
+            # Delay lifecycle manager to avoid racing server node initialization
+            TimerAction(
+                period=5.0,
+                actions=[
+                    GroupAction([
+                        PushRosNamespace(namespace),
+                        lifecycle_mgr,
+                    ]),
+                ],
             ),
         ]
     )
-
-

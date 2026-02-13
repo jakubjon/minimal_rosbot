@@ -1,16 +1,29 @@
+"""Frontier-based exploration node for the minidog robot.
+
+Finds frontier cells (free cells adjacent to unknown cells) in the
+occupancy grid, clusters them via BFS, and sends Nav2 goals to
+the nearest cluster centroid. Announces when all accessible areas
+have been mapped.
+"""
+
 import math
 import time
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 
+import tf2_ros
+from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
+from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool
+from std_srvs.srv import Empty
 
 
 @dataclass
@@ -22,39 +35,55 @@ class MapMeta:
     origin_y: float
 
 
+@dataclass
+class FrontierCluster:
+    """A group of contiguous frontier cells."""
+    cells: List[Tuple[int, int]] = field(default_factory=list)
+    centroid_x: float = 0.0
+    centroid_y: float = 0.0
+
+
 def idx(x: int, y: int, w: int) -> int:
     return y * w + x
 
 
 class FrontierExplorer(Node):
     """
-    Minimal frontier exploration:
-    - subscribe /map (OccupancyGrid)
-    - find frontier cells: free (0) adjacent to unknown (-1)
-    - pick the farthest frontier cell from origin (0,0) to encourage coverage
-    - send Nav2 NavigateToPose goals repeatedly while enabled
-
-    This is intentionally simple (sandbox). It mirrors the qre_go2 idea of modular roles.
+    Frontier exploration node:
+    - Subscribes /map (OccupancyGrid)
+    - Finds frontier cells: free (0) adjacent to unknown (-1)
+    - Clusters contiguous frontier cells via BFS
+    - Picks the nearest cluster centroid to the robot (via TF)
+    - Sends Nav2 NavigateToPose goals
+    - Announces "DONE" when all accessible areas are mapped
     """
 
     def __init__(self):
         super().__init__("minidog_frontier_explorer")
 
+        # Parameters
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("enable_topic", "/autonomy_enabled")
         self.declare_parameter("goal_frame", "map")
-        # Keep low so exploration can start early in small maps.
-        self.declare_parameter("min_frontier_cells", 5)
-        self.declare_parameter("goal_cooldown_sec", 5.0)
-        # Keep goals away from the map boundary to avoid Nav2 worldToMap() edge cases.
-        self.declare_parameter("goal_margin_cells", 10)
-        # If Nav2 aborts a goal (blocked / no path), avoid picking nearby goals for a while.
-        self.declare_parameter("blocked_goal_radius_m", 0.75)
-        self.declare_parameter("blocked_goal_ttl_sec", 30.0)
+        self.declare_parameter("robot_frame", "minidog/base_footprint")
+        self.declare_parameter("min_frontier_cells", 3)
+        self.declare_parameter("goal_cooldown_sec", 2.0)
+        self.declare_parameter("goal_margin_cells", 3)
+        self.declare_parameter("blocked_goal_radius_m", 1.5)
+        self.declare_parameter("blocked_goal_ttl_sec", 90.0)
+        self.declare_parameter("start_enabled", True)
+        self.declare_parameter("done_threshold_ticks", 15)
+        # Minimum cluster size (cells) to be considered a valid exploration target
+        self.declare_parameter("min_cluster_size", 5)
+        # Minimum distance from robot to goal (avoids useless close goals at startup)
+        self.declare_parameter("min_goal_distance_m", 0.8)
+        # Safety margin: goal cell must have no occupied cell within N cells
+        self.declare_parameter("goal_safety_margin_cells", 5)
 
         map_topic = self.get_parameter("map_topic").get_parameter_value().string_value
         enable_topic = self.get_parameter("enable_topic").get_parameter_value().string_value
         self.goal_frame = self.get_parameter("goal_frame").get_parameter_value().string_value
+        self.robot_frame = self.get_parameter("robot_frame").get_parameter_value().string_value
         self.min_frontier_cells = (
             self.get_parameter("min_frontier_cells").get_parameter_value().integer_value
         )
@@ -70,30 +99,92 @@ class FrontierExplorer(Node):
         self.blocked_goal_ttl_sec = (
             self.get_parameter("blocked_goal_ttl_sec").get_parameter_value().double_value
         )
+        self.min_cluster_size = (
+            self.get_parameter("min_cluster_size").get_parameter_value().integer_value
+        )
+        self.min_goal_distance_m = (
+            self.get_parameter("min_goal_distance_m").get_parameter_value().double_value
+        )
+        self._done_threshold = (
+            self.get_parameter("done_threshold_ticks").get_parameter_value().integer_value
+        )
+        self.goal_safety_margin_cells = (
+            self.get_parameter("goal_safety_margin_cells").get_parameter_value().integer_value
+        )
 
-        self.enabled = False
+        # State
+        self.enabled = self.get_parameter("start_enabled").get_parameter_value().bool_value
         self.last_goal_time = None
         self.map: Optional[OccupancyGrid] = None
         self.meta: Optional[MapMeta] = None
 
+        # Action client for Nav2
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.goal_in_flight = False
         self.last_goal_xy: Optional[Tuple[float, float]] = None
-        self.blocked_goals: List[Tuple[float, float, float]] = []  # (x, y, expires_wall_time)
+        self._goal_sent_wall_time: float = 0.0
+        self._min_travel_sec: float = 3.0
+        self.blocked_goals: List[Tuple[float, float, float]] = []
 
+        # TF2 for robot position
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # Exploration completion
+        self._no_frontier_streak: int = 0
+        self._done_announced: bool = False
+        self._all_blocked: bool = False
+        self._goals_sent_total: int = 0
+        self._goals_succeeded: int = 0
+        # Wall-time timeout: cancel goals that take too long (handles BT stuck in recovery)
+        self._goal_wall_timeout_sec: float = 30.0
+        self._current_goal_handle = None
+
+        # Abort streak tracking for costmap clearing and unstick
+        self._consecutive_aborts: int = 0
+        self._max_aborts_before_clear: int = 3
+        self._max_aborts_before_unstick: int = 6
+        self._unstick_active: bool = False
+        self._unstick_end_time: float = 0.0
+
+        # Publisher for manual backup commands when stuck
+        self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_nav', 10)
+
+        # Service clients for costmap clearing
+        self._clear_global_cli = self.create_client(
+            Empty, '/global_costmap/clear_entirely_global_costmap'
+        )
+        self._clear_local_cli = self.create_client(
+            Empty, '/local_costmap/clear_entirely_local_costmap'
+        )
+
+        # Subscribers
         self.create_subscription(Bool, enable_topic, self._on_enable, 10)
         self.create_subscription(OccupancyGrid, map_topic, self._on_map, 10)
 
-        self.create_timer(1.0, self._tick)
+        # Main tick - use 2s period to give executor time between ticks
+        self.create_timer(2.0, self._tick)
 
         self.get_logger().info(
-            f"frontier_explorer: map={map_topic} enable={enable_topic} action=navigate_to_pose"
+            f"frontier_explorer: map={map_topic} enable={enable_topic} "
+            f"frame={self.goal_frame} robot_frame={self.robot_frame}"
         )
+        if self.enabled:
+            self.get_logger().info("Autonomy AUTO-ENABLED — will explore when Nav2 is ready")
 
+    # ------------------------------------------------------------------
+    # Callbacks
+    # ------------------------------------------------------------------
     def _on_enable(self, msg: Bool):
+        prev = self.enabled
         self.enabled = bool(msg.data)
         if not self.enabled:
             self.goal_in_flight = False
+        if self.enabled and not prev:
+            self.get_logger().info("Autonomy ENABLED — starting exploration")
+            # Reset completion state when re-enabled
+            self._no_frontier_streak = 0
+            self._done_announced = False
 
     def _on_map(self, msg: OccupancyGrid):
         self.map = msg
@@ -105,6 +196,9 @@ class FrontierExplorer(Node):
             origin_y=msg.info.origin.position.y,
         )
 
+    # ------------------------------------------------------------------
+    # Geometry helpers
+    # ------------------------------------------------------------------
     def _neighbors4(self, x: int, y: int) -> List[Tuple[int, int]]:
         return [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
 
@@ -112,15 +206,15 @@ class FrontierExplorer(Node):
         assert self.meta is not None
         return 0 <= x < self.meta.width and 0 <= y < self.meta.height
 
-    def _is_frontier_cell(self, x: int, y: int, data: List[int]) -> bool:
+    def _is_frontier_cell(self, x: int, y: int, data) -> bool:
         assert self.meta is not None
         v = data[idx(x, y, self.meta.width)]
-        if v != 0:
+        if v != 0:  # Must be free
             return False
         for nx, ny in self._neighbors4(x, y):
             if not self._in_bounds(nx, ny):
                 continue
-            if data[idx(nx, ny, self.meta.width)] == -1:
+            if data[idx(nx, ny, self.meta.width)] == -1:  # Adjacent to unknown
                 return True
         return False
 
@@ -130,79 +224,217 @@ class FrontierExplorer(Node):
         wy = self.meta.origin_y + (y + 0.5) * self.meta.resolution
         return wx, wy
 
-    def _world_to_cell(self, wx: float, wy: float) -> Tuple[int, int]:
-        assert self.meta is not None
-        cx = int(math.floor((wx - self.meta.origin_x) / self.meta.resolution))
-        cy = int(math.floor((wy - self.meta.origin_y) / self.meta.resolution))
-        return cx, cy
+    def _is_cell_safe(self, cx: int, cy: int, data) -> bool:
+        """Check cell has no occupied neighbors within safety margin.
 
-    def _clamp_goal_to_map(self, wx: float, wy: float) -> Tuple[float, float]:
-        """
-        Clamp the goal inside the current OccupancyGrid bounds.
-        This avoids Nav2 planner worldToMap() failures when the chosen frontier lies on the border.
+        Prevents sending goals right next to walls where the robot
+        would get trapped by costmap inflation.
         """
         assert self.meta is not None
-        cx, cy = self._world_to_cell(wx, wy)
-        m = max(0, int(self.goal_margin_cells))
-        cx = max(m, min(self.meta.width - 1 - m, cx))
-        cy = max(m, min(self.meta.height - 1 - m, cy))
-        return self._cell_to_world(cx, cy)
+        w = self.meta.width
+        h = self.meta.height
+        margin = self.goal_safety_margin_cells
+        for dy in range(-margin, margin + 1):
+            for dx in range(-margin, margin + 1):
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    val = data[idx(nx, ny, w)]
+                    if val > 50:  # Occupied
+                        return False
+        return True
 
-    def _pick_goal(self) -> Optional[Tuple[float, float]]:
-        if self.map is None or self.meta is None:
+    # ------------------------------------------------------------------
+    # Costmap clearing
+    # ------------------------------------------------------------------
+    def _clear_costmaps(self):
+        """Clear both costmaps to recover from planner traps."""
+        self.get_logger().info("Clearing costmaps to recover from planner failures")
+        req = Empty.Request()
+        if self._clear_global_cli.service_is_ready():
+            self._clear_global_cli.call_async(req)
+        if self._clear_local_cli.service_is_ready():
+            self._clear_local_cli.call_async(req)
+
+    # ------------------------------------------------------------------
+    # TF-based robot position
+    # ------------------------------------------------------------------
+    def _get_robot_position(self) -> Optional[Tuple[float, float]]:
+        """Get robot position in the goal_frame (map) via TF."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self.goal_frame, self.robot_frame,
+                rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)
+            )
+            return (t.transform.translation.x, t.transform.translation.y)
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
             return None
+
+    # ------------------------------------------------------------------
+    # Frontier clustering
+    # ------------------------------------------------------------------
+    def _find_frontier_clusters(self) -> List[FrontierCluster]:
+        """Find all frontier cells and cluster them via BFS."""
+        if self.map is None or self.meta is None:
+            return []
 
         data = list(self.map.data)
-        frontier_cells: List[Tuple[int, int]] = []
+        w = self.meta.width
+        h = self.meta.height
 
-        # Cheap scan for frontier cells
-        for y in range(1, self.meta.height - 1):
-            for x in range(1, self.meta.width - 1):
+        # Step 1: find all frontier cells
+        frontier_set = set()
+        for y in range(1, h - 1):
+            for x in range(1, w - 1):
                 if self._is_frontier_cell(x, y, data):
-                    frontier_cells.append((x, y))
+                    frontier_set.add((x, y))
 
-        if len(frontier_cells) < self.min_frontier_cells:
-            return None
+        if len(frontier_set) < self.min_frontier_cells:
+            return []
 
-        # Prefer frontiers away from the map boundary.
-        m = max(0, int(self.goal_margin_cells))
-        safe = [
-            (x, y)
-            for (x, y) in frontier_cells
-            if (m <= x < self.meta.width - m) and (m <= y < self.meta.height - m)
-        ]
-        if safe:
-            frontier_cells = safe
-
-        # Choose the farthest from map origin (simple, deterministic)
-        best = None
-        best_d2 = -1.0
-        now_wall = time.time()
-        # Drop expired blocked goals.
-        self.blocked_goals = [(x, y, exp) for (x, y, exp) in self.blocked_goals if exp > now_wall]
-
-        for x, y in frontier_cells:
-            wx, wy = self._cell_to_world(x, y)
-            # Skip blocked region
-            for bx, by, _exp in self.blocked_goals:
-                if (wx - bx) * (wx - bx) + (wy - by) * (wy - by) <= self.blocked_goal_radius_m * self.blocked_goal_radius_m:
-                    wx = None
-                    break
-            if wx is None:
+        # Step 2: cluster via BFS (8-connected)
+        visited = set()
+        clusters = []
+        for cell in frontier_set:
+            if cell in visited:
                 continue
-            d2 = wx * wx + wy * wy
-            if d2 > best_d2:
-                best_d2 = d2
-                best = (wx, wy)
+            cluster = FrontierCluster()
+            queue = deque([cell])
+            visited.add(cell)
+            while queue:
+                cx, cy = queue.popleft()
+                cluster.cells.append((cx, cy))
+                # 8-connected neighbors
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = cx + dx, cy + dy
+                        if (nx, ny) in frontier_set and (nx, ny) not in visited:
+                            visited.add((nx, ny))
+                            queue.append((nx, ny))
+            if len(cluster.cells) >= self.min_cluster_size:
+                # Compute centroid in world coordinates
+                sum_x, sum_y = 0.0, 0.0
+                for x, y in cluster.cells:
+                    wx, wy = self._cell_to_world(x, y)
+                    sum_x += wx
+                    sum_y += wy
+                cluster.centroid_x = sum_x / len(cluster.cells)
+                cluster.centroid_y = sum_y / len(cluster.cells)
+                clusters.append(cluster)
 
-        if best is None:
+        return clusters
+
+    # ------------------------------------------------------------------
+    # Goal picking
+    # ------------------------------------------------------------------
+    def _is_blocked(self, wx: float, wy: float) -> bool:
+        """Check if a world position is in a blocked region."""
+        r2 = self.blocked_goal_radius_m ** 2
+        for bx, by, _exp in self.blocked_goals:
+            if (wx - bx) ** 2 + (wy - by) ** 2 <= r2:
+                return True
+        return False
+
+    def _pick_goal(self) -> Optional[Tuple[float, float]]:
+        """Pick the best exploration goal from frontier clusters.
+
+        Returns:
+            (x, y) goal in world coordinates, or None if no frontiers exist.
+            Returns "BLOCKED" sentinel (stored in self._all_blocked) when
+            frontiers exist but are all blocked — this is NOT "done".
+        """
+        # Expire old blocked goals
+        now_wall = time.time()
+        self.blocked_goals = [
+            (x, y, exp) for (x, y, exp) in self.blocked_goals if exp > now_wall
+        ]
+
+        clusters = self._find_frontier_clusters()
+        if not clusters:
+            self._all_blocked = False
             return None
-        return self._clamp_goal_to_map(best[0], best[1])
 
+        # Get robot position for nearest-cluster selection
+        robot_pos = self._get_robot_position()
+        if robot_pos is None:
+            robot_pos = (0.0, 0.0)
+            self.get_logger().warn("Cannot get robot TF; using origin for goal selection")
+
+        rx, ry = robot_pos
+        data = list(self.map.data) if self.map else []
+
+        # Pick the nearest SAFE frontier cell to the robot.
+        # Safe = not blocked, far enough from walls, far enough from robot.
+        candidates: List[Tuple[float, float, float]] = []  # (dist, wx, wy)
+        for cluster in clusters:
+            sample = cluster.cells[:80] if len(cluster.cells) > 80 else cluster.cells
+            for cell_x, cell_y in sample:
+                wx, wy = self._cell_to_world(cell_x, cell_y)
+                if self._is_blocked(wx, wy):
+                    continue
+                d = math.hypot(wx - rx, wy - ry)
+                if d < self.min_goal_distance_m:
+                    continue
+                # Safety check: is the cell far enough from walls?
+                if data and self.meta and not self._is_cell_safe(cell_x, cell_y, data):
+                    continue
+                candidates.append((d, wx, wy))
+
+        if not candidates:
+            # Frontiers exist but all blocked — NOT done, just waiting
+            self._all_blocked = True
+            return None
+
+        self._all_blocked = False
+        candidates.sort(key=lambda c: c[0])
+        return (candidates[0][1], candidates[0][2])
+
+    # ------------------------------------------------------------------
+    # Main tick
+    # ------------------------------------------------------------------
     def _tick(self):
         if not self.enabled:
             return
+        if self._done_announced:
+            return
+        # Unstick: when stuck against a wall, manually reverse for 3s
+        if self._unstick_active:
+            if time.time() < self._unstick_end_time:
+                cmd = Twist()
+                cmd.linear.x = -0.15  # Reverse slowly
+                self._cmd_vel_pub.publish(cmd)
+                return
+            else:
+                # Unstick done, stop and clear costmaps
+                cmd = Twist()
+                self._cmd_vel_pub.publish(cmd)
+                self._unstick_active = False
+                self._consecutive_aborts = 0
+                self._clear_costmaps()
+                self.get_logger().info("Unstick complete, cleared costmaps")
+                return
         if self.goal_in_flight:
+            # Cancel goals stuck for too long (wall time)
+            if self._goal_sent_wall_time > 0:
+                elapsed = time.time() - self._goal_sent_wall_time
+                if elapsed > self._goal_wall_timeout_sec:
+                    self.get_logger().warn(
+                        f"Goal stuck for {elapsed:.0f}s wall time; canceling"
+                    )
+                    if self._current_goal_handle is not None:
+                        try:
+                            self._current_goal_handle.cancel_goal_async()
+                        except Exception:
+                            pass
+                    self.goal_in_flight = False
+                    self._consecutive_aborts += 1
+                    if self.last_goal_xy:
+                        bx, by = self.last_goal_xy
+                        self.blocked_goals.append(
+                            (bx, by, time.time() + self.blocked_goal_ttl_sec)
+                        )
             return
         if self.map is None:
             return
@@ -213,14 +445,62 @@ class FrontierExplorer(Node):
             if age < self.goal_cooldown_sec:
                 return
 
-        if not self.nav.wait_for_server(timeout_sec=0.2):
+        if not self.nav.server_is_ready():
             self.get_logger().warn("Nav2 action server not ready (navigate_to_pose)")
             return
 
+        # After many consecutive aborts, try to unstick by reversing
+        if self._consecutive_aborts >= self._max_aborts_before_unstick:
+            self.get_logger().info(
+                f"Stuck: {self._consecutive_aborts} aborts, reversing to unstick"
+            )
+            self._unstick_active = True
+            self._unstick_end_time = time.time() + 4.0
+            self._consecutive_aborts = 0
+            return
+        # Clear costmaps at exactly N aborts (use exact match, not modulo)
+        if self._consecutive_aborts == self._max_aborts_before_clear:
+            self._clear_costmaps()
+            # Don't reset counter, don't return - proceed to pick a goal
+
         goal_xy = self._pick_goal()
         if goal_xy is None:
-            self.get_logger().info("No frontiers yet (or too few); keep driving to reveal map")
+            if hasattr(self, '_all_blocked') and self._all_blocked:
+                if self.blocked_goals:
+                    self.get_logger().info(
+                        f"All {len(self.blocked_goals)} blocked goals -- clearing & retrying"
+                    )
+                    self.blocked_goals.clear()
+                    self._clear_costmaps()
+                return
+            # Truly no frontier cells in the map
+            self._no_frontier_streak += 1
+            if self._no_frontier_streak >= self._done_threshold:
+                self.get_logger().info(
+                    "================================================"
+                )
+                self.get_logger().info(
+                    "  EXPLORATION COMPLETE — all accessible areas"
+                )
+                self.get_logger().info(
+                    f"  have been mapped! ({self._goals_sent_total} goals sent, "
+                    f"{self._goals_succeeded} succeeded)"
+                )
+                self.get_logger().info(
+                    "  DONE!"
+                )
+                self.get_logger().info(
+                    "================================================"
+                )
+                self._done_announced = True
+            else:
+                self.get_logger().info(
+                    f"No frontiers ({self._no_frontier_streak}/{self._done_threshold} toward done)"
+                )
             return
+
+        # Reset streak when frontiers found
+        self._no_frontier_streak = 0
 
         gx, gy = goal_xy
         goal = NavigateToPose.Goal()
@@ -232,31 +512,85 @@ class FrontierExplorer(Node):
         goal.pose.pose.position.z = 0.0
         goal.pose.pose.orientation.w = 1.0
 
-        self.get_logger().info(f"Sending frontier goal: x={gx:.2f} y={gy:.2f} frame={self.goal_frame}")
+        robot_pos = self._get_robot_position()
+        dist_str = ""
+        if robot_pos:
+            d = math.hypot(gx - robot_pos[0], gy - robot_pos[1])
+            dist_str = f" dist={d:.1f}m"
+
+        self.get_logger().info(
+            f"Goal #{self._goals_sent_total + 1}: x={gx:.2f} y={gy:.2f}{dist_str}"
+        )
+
         self.goal_in_flight = True
         self.last_goal_time = now
         self.last_goal_xy = (gx, gy)
+        self._goals_sent_total += 1
 
         send_future = self.nav.send_goal_async(goal)
         send_future.add_done_callback(self._on_goal_sent)
 
+    # ------------------------------------------------------------------
+    # Nav2 action callbacks
+    # ------------------------------------------------------------------
     def _on_goal_sent(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().warn("Frontier goal rejected")
+            self.get_logger().warn("Goal rejected by Nav2")
             self.goal_in_flight = False
+            if self.last_goal_xy:
+                bx, by = self.last_goal_xy
+                self.blocked_goals.append(
+                    (bx, by, time.time() + self.blocked_goal_ttl_sec)
+                )
             return
+        self._current_goal_handle = goal_handle
+        self._goal_sent_wall_time = time.time()
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_result)
 
     def _on_result(self, future):
         try:
-            status = future.result().status
-            self.get_logger().info(f"NavigateToPose finished with status={status}")
-            # 4 == ABORTED in action_msgs/GoalStatus (common for blocked/no path)
-            if status == 4 and self.last_goal_xy is not None:
-                bx, by = self.last_goal_xy
-                self.blocked_goals.append((bx, by, time.time() + self.blocked_goal_ttl_sec))
+            result = future.result()
+            status = result.status
+            elapsed = (
+                time.time() - self._goal_sent_wall_time
+                if self._goal_sent_wall_time > 0
+                else 999.0
+            )
+            if status == GoalStatus.STATUS_SUCCEEDED:
+                if elapsed < self._min_travel_sec:
+                    self.get_logger().warn(
+                        f"SUCCEEDED too fast ({elapsed:.1f}s); blacklisting"
+                    )
+                    if self.last_goal_xy:
+                        bx, by = self.last_goal_xy
+                        self.blocked_goals.append(
+                            (bx, by, time.time() + self.blocked_goal_ttl_sec)
+                        )
+                else:
+                    self._goals_succeeded += 1
+                    self._consecutive_aborts = 0
+                    self.get_logger().info(
+                        f"Goal SUCCEEDED ({elapsed:.1f}s)"
+                    )
+            elif status == GoalStatus.STATUS_ABORTED:
+                self._consecutive_aborts += 1
+                self.get_logger().warn(
+                    f"Goal ABORTED ({elapsed:.1f}s) "
+                    f"[streak: {self._consecutive_aborts}]"
+                )
+                if self.last_goal_xy:
+                    bx, by = self.last_goal_xy
+                    self.blocked_goals.append(
+                        (bx, by, time.time() + self.blocked_goal_ttl_sec)
+                    )
+            elif status == GoalStatus.STATUS_CANCELED:
+                self.get_logger().info("Goal CANCELED")
+            else:
+                self.get_logger().info(f"Goal finished status={status}")
+        except Exception as e:
+            self.get_logger().error(f"Error getting result: {e}")
         finally:
             self.goal_in_flight = False
 
@@ -270,6 +604,7 @@ def main():
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
-
-
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
