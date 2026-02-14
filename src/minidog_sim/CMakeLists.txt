@@ -7,6 +7,12 @@ install(DIRECTORY launch urdf config rviz worlds models webapp
   DESTINATION share/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  minidog_sim/scan_filter.py
+  minidog_sim/odom_stabilizer.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()
 
 

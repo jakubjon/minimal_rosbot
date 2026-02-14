@@ -57,11 +57,11 @@ colcon build --symlink-install
 source install/setup.bash
 
 ros2 launch minidog_sim bringup.launch.py \
-    odom_source:=wheel \
+    odom_source:=rf2o \
     enable_slam:=true \
     enable_nav2:=true \
     enable_explore:=true \
     enable_web:=true \
-    enable_rviz:=false \
-    headless:=true \
-    quiet_terminal:=true
+    enable_rviz:=true \
+    headless:=false \
+    quiet_terminal:=false

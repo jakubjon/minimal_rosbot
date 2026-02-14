@@ -13,6 +13,7 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -81,6 +82,7 @@ def generate_launch_description():
             "odom_topic": "/odom",
             "mode": odom_source,
         }.items(),
+        condition=IfCondition(PythonExpression(["'", odom_source, "' in ['wheel', 'scan']"])),
     )
     mux = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -104,6 +106,59 @@ def generate_launch_description():
             "scan_topic": "/scan",
         }.items(),
         condition=IfCondition(PythonExpression(["'", odom_source, "' == 'scan_matcher'"])),
+    )
+
+    scan_filter = Node(
+        package="minidog_sim",
+        executable="scan_filter.py",
+        name="scan_safety_filter",
+        output="screen",
+        remappings=[
+            ("scan_raw", "/scan"),
+            ("scan_safe", "/scan_safe"),
+        ],
+        condition=IfCondition(PythonExpression(["'", odom_source, "' == 'rf2o'"])),
+    )
+
+    rf2o_odom = Node(
+        package="rf2o_laser_odometry",
+        executable="rf2o_laser_odometry_node",
+        name="rf2o_laser_odometry",
+        output="screen",
+        parameters=[
+            {
+                "laser_scan_topic": "/scan_safe",
+                "odom_topic": "/odom_rf2o",
+                "publish_tf": False,
+                "base_frame_id": "minidog/base_footprint",
+                "odom_frame_id": "minidog/odom",
+                "init_pose_from_topic": "",
+                "freq": 20.0,
+                "use_sim_time": use_sim_time,
+            }
+        ],
+        condition=IfCondition(PythonExpression(["'", odom_source, "' == 'rf2o'"])),
+    )
+
+    odom_stabilizer = Node(
+        package="minidog_sim",
+        executable="odom_stabilizer.py",
+        name="odom_stabilizer",
+        output="screen",
+        parameters=[
+            {
+                "odom_frame": "minidog/odom",
+                "base_frame": "minidog/base_footprint",
+                "publish_tf": True,
+                "freq": 20.0,
+                "use_sim_time": use_sim_time,
+            }
+        ],
+        remappings=[
+            ("odom_rf2o", "/odom_rf2o"),
+            ("odom", "/odom"),
+        ],
+        condition=IfCondition(PythonExpression(["'", odom_source, "' == 'rf2o'"])),
     )
 
     # ----------------------------------------------------------------
@@ -203,13 +258,17 @@ def generate_launch_description():
         OnProcessExit(
             target_action=cleanup,
             on_exit=[
-                # Phase 1+2: immediate
+                # Phase 1: immediate (Gazebo + bridge + wheel odom + scan matcher)
                 sim,
                 bridge,
                 scan_odom,
                 scan_matcher_odom,
-                mux,
-                rviz,
+                # Phase 2a: scan filter and rf2o after 0.5s (dependency chain)
+                TimerAction(period=0.5, actions=[scan_filter, rf2o_odom]),
+                # Phase 2b: odom stabilizer after 1.0s (waits for RF2O)
+                TimerAction(period=1.0, actions=[odom_stabilizer]),
+                # Phase 2c: RViz and mux after 1.5s
+                TimerAction(period=1.5, actions=[mux, rviz]),
                 # Phase 3: SLAM after 5s
                 TimerAction(period=5.0, actions=[slam]),
                 # Phase 4: Nav2 after 10s (SLAM needs time to produce first map)

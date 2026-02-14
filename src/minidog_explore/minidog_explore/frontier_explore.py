@@ -79,6 +79,17 @@ class FrontierExplorer(Node):
         self.declare_parameter("min_goal_distance_m", 0.8)
         # Safety margin: goal cell must have no occupied cell within N cells
         self.declare_parameter("goal_safety_margin_cells", 5)
+        # Unstick mechanism parameters
+        self.declare_parameter("unstick_reverse_speed_mps", 0.15)
+        self.declare_parameter("unstick_duration_sec", 4.0)
+        # Minimum travel time before considering a goal "succeeded too fast"
+        self.declare_parameter("min_travel_time_sec", 3.0)
+        # Maximum cells to sample per frontier cluster
+        self.declare_parameter("cluster_sample_size", 80)
+        # Occupancy threshold for considering a cell as occupied
+        self.declare_parameter("occupied_threshold", 50)
+        # Wall-time timeout for stuck goals
+        self.declare_parameter("goal_wall_timeout_sec", 30.0)
 
         map_topic = self.get_parameter("map_topic").get_parameter_value().string_value
         enable_topic = self.get_parameter("enable_topic").get_parameter_value().string_value
@@ -111,6 +122,24 @@ class FrontierExplorer(Node):
         self.goal_safety_margin_cells = (
             self.get_parameter("goal_safety_margin_cells").get_parameter_value().integer_value
         )
+        self.unstick_reverse_speed = (
+            self.get_parameter("unstick_reverse_speed_mps").get_parameter_value().double_value
+        )
+        self.unstick_duration = (
+            self.get_parameter("unstick_duration_sec").get_parameter_value().double_value
+        )
+        self._min_travel_sec = (
+            self.get_parameter("min_travel_time_sec").get_parameter_value().double_value
+        )
+        self.cluster_sample_size = (
+            self.get_parameter("cluster_sample_size").get_parameter_value().integer_value
+        )
+        self.occupied_threshold = (
+            self.get_parameter("occupied_threshold").get_parameter_value().integer_value
+        )
+        self._goal_wall_timeout_sec = (
+            self.get_parameter("goal_wall_timeout_sec").get_parameter_value().double_value
+        )
 
         # State
         self.enabled = self.get_parameter("start_enabled").get_parameter_value().bool_value
@@ -123,7 +152,6 @@ class FrontierExplorer(Node):
         self.goal_in_flight = False
         self.last_goal_xy: Optional[Tuple[float, float]] = None
         self._goal_sent_wall_time: float = 0.0
-        self._min_travel_sec: float = 3.0
         self.blocked_goals: List[Tuple[float, float, float]] = []
 
         # TF2 for robot position
@@ -136,8 +164,6 @@ class FrontierExplorer(Node):
         self._all_blocked: bool = False
         self._goals_sent_total: int = 0
         self._goals_succeeded: int = 0
-        # Wall-time timeout: cancel goals that take too long (handles BT stuck in recovery)
-        self._goal_wall_timeout_sec: float = 30.0
         self._current_goal_handle = None
 
         # Abort streak tracking for costmap clearing and unstick
@@ -146,6 +172,11 @@ class FrontierExplorer(Node):
         self._max_aborts_before_unstick: int = 6
         self._unstick_active: bool = False
         self._unstick_end_time: float = 0.0
+
+        # Costmap clearing cooldown
+        self._costmaps_clearing: bool = False
+        self._clear_start_time: float = 0.0
+        self._clear_cooldown_sec: float = 2.0
 
         # Publisher for manual backup commands when stuck
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_nav', 10)
@@ -239,7 +270,7 @@ class FrontierExplorer(Node):
                 nx, ny = cx + dx, cy + dy
                 if 0 <= nx < w and 0 <= ny < h:
                     val = data[idx(nx, ny, w)]
-                    if val > 50:  # Occupied
+                    if val > self.occupied_threshold:  # Occupied
                         return False
         return True
 
@@ -254,6 +285,9 @@ class FrontierExplorer(Node):
             self._clear_global_cli.call_async(req)
         if self._clear_local_cli.service_is_ready():
             self._clear_local_cli.call_async(req)
+        # Set cooldown to allow costmaps to repopulate
+        self._costmaps_clearing = True
+        self._clear_start_time = time.time()
 
     # ------------------------------------------------------------------
     # TF-based robot position
@@ -359,8 +393,10 @@ class FrontierExplorer(Node):
         # Get robot position for nearest-cluster selection
         robot_pos = self._get_robot_position()
         if robot_pos is None:
-            robot_pos = (0.0, 0.0)
-            self.get_logger().warn("Cannot get robot TF; using origin for goal selection")
+            self.get_logger().warn("Cannot get robot TF; skipping goal selection this tick")
+            # Set _all_blocked to prevent incrementing done streak on TF failures
+            self._all_blocked = True
+            return None
 
         rx, ry = robot_pos
         data = list(self.map.data) if self.map else []
@@ -369,7 +405,13 @@ class FrontierExplorer(Node):
         # Safe = not blocked, far enough from walls, far enough from robot.
         candidates: List[Tuple[float, float, float]] = []  # (dist, wx, wy)
         for cluster in clusters:
-            sample = cluster.cells[:80] if len(cluster.cells) > 80 else cluster.cells
+            # Sample spatially distributed cells using stride-based sampling
+            max_samples = self.cluster_sample_size
+            if len(cluster.cells) > max_samples:
+                stride = len(cluster.cells) // max_samples
+                sample = cluster.cells[::stride]
+            else:
+                sample = cluster.cells
             for cell_x, cell_y in sample:
                 wx, wy = self._cell_to_world(cell_x, cell_y)
                 if self._is_blocked(wx, wy):
@@ -401,9 +443,17 @@ class FrontierExplorer(Node):
             return
         # Unstick: when stuck against a wall, manually reverse for 3s
         if self._unstick_active:
+            # Preempt unstick if autonomy disabled or goal completed
+            if not self.enabled or not self.goal_in_flight:
+                cmd = Twist()  # Stop
+                self._cmd_vel_pub.publish(cmd)
+                self._unstick_active = False
+                self.get_logger().info("Unstick preempted (autonomy disabled or goal completed)")
+                return
+
             if time.time() < self._unstick_end_time:
                 cmd = Twist()
-                cmd.linear.x = -0.15  # Reverse slowly
+                cmd.linear.x = -self.unstick_reverse_speed  # Reverse slowly
                 self._cmd_vel_pub.publish(cmd)
                 return
             else:
@@ -415,6 +465,14 @@ class FrontierExplorer(Node):
                 self._clear_costmaps()
                 self.get_logger().info("Unstick complete, cleared costmaps")
                 return
+
+        # Wait for costmap clearing cooldown
+        if self._costmaps_clearing:
+            if time.time() - self._clear_start_time < self._clear_cooldown_sec:
+                return  # Wait for costmaps to repopulate
+            self._costmaps_clearing = False
+            self.get_logger().info("Costmap clearing cooldown complete")
+
         if self.goal_in_flight:
             # Cancel goals stuck for too long (wall time)
             if self._goal_sent_wall_time > 0:
@@ -455,7 +513,7 @@ class FrontierExplorer(Node):
                 f"Stuck: {self._consecutive_aborts} aborts, reversing to unstick"
             )
             self._unstick_active = True
-            self._unstick_end_time = time.time() + 4.0
+            self._unstick_end_time = time.time() + self.unstick_duration
             self._consecutive_aborts = 0
             return
         # Clear costmaps at exactly N aborts (use exact match, not modulo)
@@ -551,6 +609,10 @@ class FrontierExplorer(Node):
 
     def _on_result(self, future):
         try:
+            # Guard against double-processing if timeout already handled this goal
+            if not self.goal_in_flight:
+                return
+
             result = future.result()
             status = result.status
             elapsed = (

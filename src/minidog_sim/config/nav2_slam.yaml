@@ -13,8 +13,8 @@
 controller_server:
   ros__parameters:
     use_sim_time: true
-    # Reduce from 10Hz to 5Hz — less CPU pressure in WSL2+Gazebo.
-    controller_frequency: 5.0
+    # Increased to 10Hz for better Ackermann steering control (reduced oscillations)
+    controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
@@ -28,7 +28,7 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.10
-      movement_time_allowance: 30.0
+      movement_time_allowance: 15.0
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -40,9 +40,9 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.25
       max_linear_accel: 0.5
-      lookahead_dist: 0.8
+      lookahead_dist: 0.6
       min_lookahead_dist: 0.4
-      max_lookahead_dist: 1.5
+      max_lookahead_dist: 1.0
       use_velocity_scaled_lookahead_dist: true
       # Ackermann robot cannot rotate in place — disable in-place rotation.
       use_rotate_to_heading: false
@@ -52,7 +52,7 @@ controller_server:
       allow_reversing: true
       # Collision detection: be strict to prevent getting stuck near walls.
       use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
+      max_allowed_time_to_collision_up_to_carrot: 0.5
       # Cost-regulated velocity scaling (slow near obstacles)
       use_cost_regulated_linear_velocity_scaling: true
       cost_scaling_dist: 0.8
@@ -178,12 +178,6 @@ lifecycle_manager:
   ros__parameters:
     use_sim_time: true
     autostart: true
-    node_names:
-      - controller_server
-      - planner_server
-      - bt_navigator
-      - behavior_server
-      - waypoint_follower
     node_names:
       - controller_server
       - planner_server
