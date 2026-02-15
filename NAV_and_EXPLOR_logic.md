@@ -1,24 +1,22 @@
 ### Navigation & exploration logic (current implementation)
 
-The **target behavior** is: *when autonomy is enabled, the robot maps the entire area until there is essentially no unknown space left*.
-
-Here is what the current implementation actually does today.
+The **target behavior** is: *when autonomy is enabled, the robot maps the entire area until there is essentially no unknown space left, then announces completion*.
 
 #### Autonomy gating (state machine)
 
 The only mode switch is `/autonomy_enabled`:
 - **OFF (`false`)**: manual commands drive the robot (`/cmd_vel_manual → /cmd_vel`)
-- **ON (`true`)**: Nav2 drives the robot (`/cmd_vel_nav → /cmd_vel`) and the explorer starts sending goals
+- **ON (`true`)**: Nav2 drives the robot (`/cmd_vel_nav → /cmd_vel`) and the explorer sends goals
 
-Autonomous exploration therefore requires these to be running:
+Manual override is available even during autonomy: non-zero `/cmd_vel_manual` temporarily overrides Nav2 commands for safety or bootstrap mapping.
+
+Autonomous exploration requires:
 - `slam_toolbox` (publishes `/map` and `map→odom`)
-- an odom source (recommended: `rf2o_laser_odometry_node` publishing `odom→base`)
+- An odom source (recommended: `wheel` for simulation, publishes `odom→base_footprint`)
 - Nav2 (planning/control producing `/cmd_vel_nav`)
 - `minidog_frontier_explorer` (sending goals)
 
-#### Pseudocode (starting from “autonomy enabled”)
-
-This is a simplified pseudocode view of the *current* autonomous loop:
+#### Pseudocode (starting from "autonomy enabled")
 
 ```text
 on /autonomy_enabled == true:
@@ -26,164 +24,174 @@ on /autonomy_enabled == true:
   minidog_cmd_mux forwards /cmd_vel_nav -> /cmd_vel
   (manual override can still temporarily win if manual Twist is non-zero)
 
-  # 2) Explorer begins periodic ticks
-  loop every ~1s:
-    if Nav2 NavigateToPose action server not ready:
-      wait; continue
+  # 2) Explorer begins periodic ticks (every 2s)
+  loop every ~2s:
+    # Compute map data and clusters ONCE per tick (shared across functions)
+    tick_data = list(map.data)
+    tick_clusters = find_frontier_clusters(tick_data)
+    publish_status(tick_clusters)
+
+    if not enabled or done_announced:
+      continue
+
+    # --- Unstick: reverse when stuck against a wall ---
+    if unstick_active:
+      if autonomy disabled or goal completed:
+        stop; unstick_active = false   # preempt
+      elif time_remaining > 0:
+        publish reverse cmd_vel (-0.20 m/s)
+      else:
+        stop; unstick_active = false
+        clear_costmaps(); start cooldown
+      continue
+
+    # --- Costmap clearing cooldown (2s) ---
+    if costmaps_clearing and cooldown_not_elapsed:
+      continue
+
+    # --- Goal timeout (30s wall-time) ---
+    if goal_in_flight and elapsed > 30s:
+      cancel_goal(); blacklist_region(); consecutive_aborts++
+      continue
+
+    if goal_in_flight:
+      continue   # wait for Nav2 result
+
+    if map not received:
+      continue
 
     if cooldown not elapsed:
       continue
 
-    if /map not received yet:
+    if Nav2 action server not ready:
       continue
 
-    frontier_cells = []
-    for each cell (x,y) in OccupancyGrid:
-      if cell==FREE(0) and any 4-neighbor==UNKNOWN(-1):
-        frontier_cells.append((x,y))
-
-    frontier_cells = filter_out_cells_near_map_border(frontier_cells, margin_cells)
-
-    if frontier_cells is empty (or too few):
-      # current behavior: do nothing and keep waiting
+    # --- Immediate unstick on ANY abort ---
+    if consecutive_aborts > 0:
+      unstick_active = true
+      unstick_end = now + 5s
+      consecutive_aborts = 0
       continue
 
-    goal_cell = argmax_over(frontier_cells, distance_to_map_origin)
-    goal_xy = cell_to_world(goal_cell)
-    goal_xy = clamp_inside_map(goal_xy, margin_cells)
+    # --- Goal selection (heading-aware, forward-biased) ---
+    expire_old_blocked_goals()
+    robot_pose = get_robot_pose()  # (x, y, yaw) from TF
+    if robot_pose is None:
+      skip this tick (TF failure)
 
-    send NavigateToPose(goal_xy, frame="map")
+    candidates = []
+    for cluster in tick_clusters:
+      for cell in stride_sample(cluster.cells):
+        if blocked or too_close or not safe:
+          continue
+        goal_angle = atan2(wy - ry, wx - rx)
+        angle_diff = |normalize(goal_angle - robot_yaw)|
+        heading_penalty = 1.0 + heading_weight * angle_diff / pi
+        score = (distance / sqrt(cluster_size)) * heading_penalty
+        candidates.append((score, wx, wy))
+
+    if no candidates and frontiers exist (all blocked):
+      all_blocked_cycles++
+      if all_blocked_cycles >= 3:
+        declare EXPLORATION COMPLETE
+      else:
+        clear blocked list; clear costmaps; retry
+      continue
+
+    if no frontier cells at all:
+      no_frontier_streak++
+      if no_frontier_streak >= 8:
+        declare EXPLORATION COMPLETE
+      continue
+
+    # Pick lowest-scoring (best) candidate
+    goal = candidates.sort_by_score()[0]
+    goal_yaw = atan2(gy - ry, gx - rx)
+    goal.orientation = quaternion_from_yaw(goal_yaw)  # tangential approach
+
+    send NavigateToPose(goal, frame="map")
 
     wait for result:
-      if result == SUCCEEDED:
-        goal_in_flight = false
-        # next tick will pick a new frontier
-      if result == ABORTED:
-        blacklist_goal_region(goal_xy, radius, ttl)
-        goal_in_flight = false
-        # next tick picks a different frontier (not near blacklisted regions)
-
-on /autonomy_enabled == false:
-  minidog_cmd_mux forwards /cmd_vel_manual -> /cmd_vel
-  explorer stops sending new goals
+      if SUCCEEDED and elapsed >= 1s:
+        goals_succeeded++; consecutive_aborts = 0
+      if SUCCEEDED and elapsed < 1s:
+        blacklist (goal reached too fast = likely invalid)
+      if ABORTED:
+        consecutive_aborts++; blacklist
+      if CANCELED:
+        log and continue
 ```
 
-#### Current goal selection logic (frontier policy)
+#### Goal selection logic (heading-aware frontier policy)
 
-The explorer implements a simple frontier heuristic:
-- Compute **frontier cells** from `/map` (`nav_msgs/OccupancyGrid`):
-  - cell == **free (0)** AND has a 4-neighbor cell == **unknown (-1)**
-- Filter out frontiers near the map boundary (goal margin) to avoid Nav2 `worldToMap` edge failures.
-- Pick a goal as the **farthest frontier cell from the map origin** (deterministic).
-- Send `NavigateToPose` in the `map` frame.
+The explorer implements a **heading-weighted frontier heuristic**:
 
-There is no clustering, no information-gain scoring, and no explicit pre-check that a plan exists before sending.
+1. **Frontier detection**: Find cells where `value == 0` (free) AND any 4-neighbor is `-1` (unknown). Includes map edge cells.
 
-#### What happens at obstacles (why it can stop)
+2. **Clustering**: 8-connected BFS groups contiguous frontier cells. Clusters with fewer than `min_cluster_size` (5) cells are discarded.
 
-When the robot encounters obstacles, Nav2 may:
-- replan and attempt recovery behaviors via `navigate_w_replanning_and_recovery.xml`
-- still stall if the goal is unreachable or the local controller cannot find a feasible collision-free command
+3. **Sampling**: Large clusters are stride-sampled (`stride = cluster_size // 80`) for efficiency while maintaining spatial distribution.
 
-Common “stop” causes in this setup:
-- goal is technically a frontier, but **not reachable** in the current free-space graph
-- costmap inflation/footprint/controller parameters are too conservative for narrow passages
-- repeated recoveries don’t resolve the blockage (e.g., boxed-in situations)
+4. **Safety check**: Each candidate cell must have no occupied cell (value > 50) within a 5-cell (0.25m) radius.
 
-#### Current “stuck goal” handling
+5. **Scoring**: `score = (distance / sqrt(cluster_size)) * heading_penalty`
+   - `distance`: Euclidean from robot to candidate
+   - `sqrt(cluster_size)`: larger frontiers (more information gain) get lower scores
+   - `heading_penalty = 1.0 + heading_weight * |angle_diff| / pi`
+     - `heading_weight` default: 2.0
+     - Goal directly ahead (0°): penalty = 1.0
+     - Goal to the side (90°): penalty = 2.0
+     - Goal directly behind (180°): penalty = 3.0
 
-If `NavigateToPose` finishes with **ABORTED**, the explorer:
-- blacklists the last goal region (radius + TTL)
-- avoids choosing candidate frontier goals near that region temporarily
+6. **Goal orientation**: Set to the direction vector from robot to goal (`atan2(gy-ry, gx-rx)`). This produces smooth tangential paths for the Ackermann robot.
 
-This prevents repeatedly hammering the same failed target.
+7. **Blocked goals**: Aborted/timed-out goals are blacklisted (1.5m radius, 90s TTL using ROS sim-time).
 
-#### Completion criteria (“map until no unknown exists”)
+#### Navigation behavior (Ackermann-optimized)
 
-Today, there is **no explicit “done” criterion** implemented.
+- **Forward-only**: `allow_reversing: false` in RegulatedPurePursuitController. The robot only moves forward during normal path following.
+- **Yaw tolerance**: `yaw_goal_tolerance: 6.28` (full circle). Ackermann robots cannot rotate in place to match a heading — accept any heading at goal position.
+- **Recovery behavior tree** (`nav2_bt_ackermann.xml`): No Spin recovery. Uses ClearCostmap → Wait (3s) → BackUp (1.0m at 0.15 m/s). 3 retries before reporting failure.
+- **Reversing for recovery only**: The `BackUp` behavior in the BT and the explorer's unstick mechanism both reverse — but only as last-resort recovery, not during normal path following.
 
-The explorer keeps running while autonomy is enabled and continues to send goals as long as it can find frontiers; it does not compute global unknown percentage and it does not stop automatically once the map is complete.
+#### Stuck detection and recovery
 
-### Navigation & exploration logic (future improvements)
+The system uses a **two-layer recovery** approach:
 
-To reach the intended behavior (“explore until unknown≈0”), the typical next steps are:
+1. **Nav2 BT layer**: On controller/planner failure within a single goal, the behavior tree cycles through ClearCostmap → Wait → BackUp. Up to 3 retries before aborting the goal.
 
-#### 1) Add an explicit map-completion metric + stop condition
+2. **Explorer layer**: On **any** goal abort (after Nav2's BT exhausted its own recovery):
+   - Immediately activates unstick: reverse at 0.20 m/s for 5s
+   - After unstick completes: stop, clear both costmaps, wait 2s cooldown
+   - Then picks a new goal (heading-biased away from the stuck area)
 
-- Compute \(p_{unknown} = N_{unknown}/N_{total}\) where unknown cells are `-1`.
-- Define exploration “done” when \(p_{unknown}\) falls below a threshold (e.g. 1–3%) for a stable window (e.g. 10–30s).
-- On completion:
-  - publish `/autonomy_enabled=false`
-  - publish zero `/cmd_vel_manual`
-  - optionally save the map (slam_toolbox service)
+This means stuck recovery is fast — no multi-abort threshold. If the robot can't reach a goal after Nav2's own retries, it backs up immediately.
 
-#### 2) Improve frontier selection quality
+#### Completion detection
 
-- Cluster frontier cells into regions (connected components).
-- Score regions by **information gain** and **travel cost** (plan length).
-- Choose the best frontier by maximizing a utility like `gain / cost`.
-- Sample multiple candidate poses per frontier and pick one that is reachable and collision-safe.
+Two paths to `EXPLORATION COMPLETE`:
 
-#### 3) Feasibility pre-check before sending a goal
+1. **No frontiers**: 8 consecutive ticks (~16s) with zero frontier cells in the map. The stability window prevents false positives from brief SLAM map update gaps.
 
-Before sending `NavigateToPose`, request a plan (Nav2 planner service). If planning fails, blacklist the region and pick a different frontier immediately.
+2. **All blocked**: If frontiers exist but all candidates are blocked/unsafe, the explorer clears the blocklist and retries. After 3 such cycles with no progress, it declares completion (all remaining frontiers are unreachable).
 
-#### 4) Better stuck detection
+The explorer also distinguishes TF lookup failures from true "no frontiers" — a failed TF lookup does not increment the completion streak.
 
-Use additional signals beyond “ABORTED”:
-- progress checker failure
-- oscillation conditions
-- repeated recovery loops
+#### Key parameters
 
-#### 5) Systematic coverage / cleanup phase
-
-Greedy frontier exploration often leaves pockets of unknown (occlusions, narrow passages). Add a final cleanup phase:
-- target remaining unknown “islands”
-- optionally run coverage path planning over free space
-
-#### 6) Tuning for this robot (Ackermann + costmaps)
-
-If the robot stalls too often, likely tuning targets:
-- footprint/inflation radius
-- controller limits (turn radius, min velocity thresholds)
-- progress checker and recovery parameters (backup distance/angle, clear costmap usage)
-
-#### Behavior Trees as a further improvement (when it makes sense)
-
-There are two distinct “BT layers” you can use:
-
-- **Nav2 internal BT** (already used): `bt_navigator` runs a BT for *executing a single navigation task* (go to pose, replan, recover, etc).
-- **Exploration supervisor BT** (not implemented): a BT that decides *which goal to go to next* until mapping is complete.
-
-If your goal is “explore until unknown≈0”, an exploration-supervisor BT can be a good fit because it naturally encodes:
-- retries and fallbacks (try next frontier, then rotate-in-place, then backtrack)
-- explicit termination conditions (unknown fraction below threshold)
-- clear separation between “decision making” and Nav2’s “motion execution”
-
-Example high-level exploration-supervisor BT (conceptual):
-
-```text
-Root
-└─ ReactiveFallback
-   ├─ Sequence   # completion check
-   │  ├─ Condition: autonomy_enabled == true
-   │  ├─ Condition: map_unknown_fraction < done_threshold (stable for T seconds)
-   │  └─ Action: disable_autonomy + stop_robot + (optional) save_map
-   ├─ Sequence   # main exploration loop
-   │  ├─ Condition: autonomy_enabled == true
-   │  ├─ Action: update_frontiers_from_map
-   │  ├─ Action: select_best_frontier (gain/cost, reachable)
-   │  ├─ Action: navigate_to_frontier (Nav2 NavigateToPose)
-   │  └─ Action: wait_for_map_update / cooldown
-   └─ Sequence   # fallback when stuck / no frontiers
-      ├─ Action: clear_costmaps
-      ├─ Action: recovery_motion (spin/backup)
-      └─ Action: re-evaluate_frontiers
-```
-
-What this would change vs today:
-- “done” becomes explicit (not just “no frontiers seen right now”)
-- “try next frontier” is a first-class fallback, not only triggered by ABORTED
-- you can integrate feasibility pre-checks (planner) as a dedicated action node
-
-If you don’t want an external BT engine, you can implement the same structure as a small explicit state machine in the explorer node; BT just tends to scale better as behaviors grow.
+| Parameter | Default | Description |
+|---|---|---|
+| `heading_weight` | 2.0 | Forward bias strength (0=none, 2=3x penalty for rear goals) |
+| `done_threshold_ticks` | 8 | Consecutive no-frontier ticks before declaring done |
+| `goal_cooldown_sec` | 2.0 | Minimum time between goal attempts |
+| `goal_wall_timeout_sec` | 30.0 | Cancel goal if no result after this long |
+| `blocked_goal_radius_m` | 1.5 | Blacklist radius around failed goals |
+| `blocked_goal_ttl_sec` | 90.0 | Time before blocked goals expire |
+| `goal_safety_margin_cells` | 5 | Clearance from occupied cells (0.25m) |
+| `min_cluster_size` | 5 | Minimum frontier cluster size |
+| `min_goal_distance_m` | 0.8 | Ignore goals closer than this |
+| `unstick_reverse_speed_mps` | 0.20 | Reverse speed during unstick |
+| `unstick_duration_sec` | 5.0 | Duration of reverse unstick maneuver |
+| `min_travel_time_sec` | 1.0 | Goals completed faster are blacklisted |
+| `cluster_sample_size` | 80 | Max cells sampled per cluster |
+| `occupied_threshold` | 50 | OccupancyGrid value considered occupied |

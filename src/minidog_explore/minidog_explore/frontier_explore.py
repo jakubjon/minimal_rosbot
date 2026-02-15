@@ -81,8 +81,8 @@ class FrontierExplorer(Node):
         # Safety margin: goal cell must have no occupied cell within N cells
         self.declare_parameter("goal_safety_margin_cells", 5)
         # Unstick mechanism parameters
-        self.declare_parameter("unstick_reverse_speed_mps", 0.15)
-        self.declare_parameter("unstick_duration_sec", 4.0)
+        self.declare_parameter("unstick_reverse_speed_mps", 0.20)
+        self.declare_parameter("unstick_duration_sec", 5.0)
         # Minimum travel time before considering a goal "succeeded too fast"
         self.declare_parameter("min_travel_time_sec", 1.0)
         # Maximum cells to sample per frontier cluster
@@ -91,6 +91,8 @@ class FrontierExplorer(Node):
         self.declare_parameter("occupied_threshold", 50)
         # Wall-time timeout for stuck goals
         self.declare_parameter("goal_wall_timeout_sec", 30.0)
+        # Heading weight: penalize goals behind robot (0=no preference, 2.0=3x cost for rear goals)
+        self.declare_parameter("heading_weight", 2.0)
 
         map_topic = self.get_parameter("map_topic").get_parameter_value().string_value
         enable_topic = self.get_parameter("enable_topic").get_parameter_value().string_value
@@ -141,6 +143,9 @@ class FrontierExplorer(Node):
         self._goal_wall_timeout_sec = (
             self.get_parameter("goal_wall_timeout_sec").get_parameter_value().double_value
         )
+        self.heading_weight = (
+            self.get_parameter("heading_weight").get_parameter_value().double_value
+        )
 
         # State
         self.enabled = self.get_parameter("start_enabled").get_parameter_value().bool_value
@@ -172,10 +177,8 @@ class FrontierExplorer(Node):
         self._all_blocked_cycles: int = 0
         self._max_all_blocked_cycles: int = 3
 
-        # Abort streak tracking for costmap clearing and unstick
+        # Abort tracking: any abort triggers immediate reverse + costmap clear
         self._consecutive_aborts: int = 0
-        self._max_aborts_before_clear: int = 3
-        self._max_aborts_before_unstick: int = 6
         self._unstick_active: bool = False
         self._unstick_end_ns: int = 0  # ROS clock nanoseconds
 
@@ -353,6 +356,23 @@ class FrontierExplorer(Node):
                 tf2_ros.ExtrapolationException):
             return None
 
+    def _get_robot_pose(self) -> Optional[Tuple[float, float, float]]:
+        """Get robot (x, y, yaw) in the goal_frame (map) via TF."""
+        try:
+            t = self.tf_buffer.lookup_transform(
+                self.goal_frame, self.robot_frame,
+                rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.1)
+            )
+            x = t.transform.translation.x
+            y = t.transform.translation.y
+            q = t.transform.rotation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                             1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            return (x, y, yaw)
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            return None
+
     # ------------------------------------------------------------------
     # Frontier clustering
     # ------------------------------------------------------------------
@@ -450,19 +470,22 @@ class FrontierExplorer(Node):
             self._all_blocked = False
             return None
 
-        # Get robot position for nearest-cluster selection
-        robot_pos = self._get_robot_position()
-        if robot_pos is None:
+        # Get robot pose (x, y, yaw) for heading-aware goal selection
+        robot_pose = self._get_robot_pose()
+        if robot_pose is None:
             self.get_logger().warn("Cannot get robot TF; skipping goal selection this tick")
             # Set _all_blocked to prevent incrementing done streak on TF failures
             self._all_blocked = True
             return None
 
-        rx, ry = robot_pos
+        rx, ry, robot_yaw = robot_pose
 
-        # Pick the best SAFE frontier cell using distance / sqrt(cluster_size).
-        # Safe = not blocked, far enough from walls, far enough from robot.
+        # Pick the best SAFE frontier cell using heading-weighted scoring.
+        # Score = (distance / sqrt(cluster_size)) * heading_penalty
+        # heading_penalty = 1 + heading_weight * |angle_diff| / pi
+        # Goals ahead: penalty ~1.0, goals behind: penalty ~1+heading_weight
         candidates: List[Tuple[float, float, float]] = []  # (score, wx, wy)
+        hw = self.heading_weight
         for cluster in clusters:
             cluster_size = len(cluster.cells)
             size_factor = math.sqrt(cluster_size)
@@ -483,8 +506,14 @@ class FrontierExplorer(Node):
                 # Safety check: is the cell far enough from walls?
                 if data and self.meta and not self._is_cell_safe(cell_x, cell_y, data):
                     continue
-                # Score: lower is better. Prefer large clusters (divide by size).
-                score = d / size_factor
+                # Heading penalty: prefer goals ahead of robot
+                goal_angle = math.atan2(wy - ry, wx - rx)
+                angle_diff = abs(math.atan2(
+                    math.sin(goal_angle - robot_yaw),
+                    math.cos(goal_angle - robot_yaw)
+                ))
+                heading_penalty = 1.0 + hw * angle_diff / math.pi
+                score = (d / size_factor) * heading_penalty
                 candidates.append((score, wx, wy))
 
         if not candidates:
@@ -580,20 +609,16 @@ class FrontierExplorer(Node):
             self.get_logger().warn("Nav2 action server not ready (navigate_to_pose)")
             return
 
-        # After many consecutive aborts, try to unstick by reversing
-        if self._consecutive_aborts >= self._max_aborts_before_unstick:
+        # On any abort: reverse to unstick, clear costmaps, then try a new goal.
+        # Nav2's BT already attempted its own recovery (clear + wait + backup 1m).
+        # If the goal still aborted, the robot is truly stuck — reverse immediately.
+        if self._consecutive_aborts > 0:
             self.get_logger().info(
-                f"Stuck: {self._consecutive_aborts} aborts, reversing to unstick"
+                f"Goal aborted ({self._consecutive_aborts}x) — reversing to unstick"
             )
             self._unstick_active = True
             self._unstick_end_ns = self.get_clock().now().nanoseconds + int(self.unstick_duration * 1e9)
             self._consecutive_aborts = 0
-            return
-        # Clear costmaps at exactly N aborts; advance counter to avoid re-triggering
-        if self._consecutive_aborts == self._max_aborts_before_clear:
-            self._clear_costmaps()
-            self._consecutive_aborts += 1  # Move past exact match
-            # Return to let costmaps repopulate before picking a new goal
             return
 
         goal_xy = self._pick_goal(tick_clusters, tick_data)
@@ -653,13 +678,18 @@ class FrontierExplorer(Node):
         goal.pose.pose.position.x = float(gx)
         goal.pose.pose.position.y = float(gy)
         goal.pose.pose.position.z = 0.0
-        goal.pose.pose.orientation.w = 1.0
-
-        robot_pos = self._get_robot_position()
+        # Set goal orientation toward the goal direction (tangential approach)
+        robot_pose = self._get_robot_pose()
         dist_str = ""
-        if robot_pos:
-            d = math.hypot(gx - robot_pos[0], gy - robot_pos[1])
+        if robot_pose:
+            rpx, rpy, _ = robot_pose
+            goal_yaw = math.atan2(gy - rpy, gx - rpx)
+            goal.pose.pose.orientation.z = math.sin(goal_yaw / 2.0)
+            goal.pose.pose.orientation.w = math.cos(goal_yaw / 2.0)
+            d = math.hypot(gx - rpx, gy - rpy)
             dist_str = f" dist={d:.1f}m"
+        else:
+            goal.pose.pose.orientation.w = 1.0
 
         self.get_logger().info(
             f"Goal #{self._goals_sent_total + 1}: x={gx:.2f} y={gy:.2f}{dist_str}"

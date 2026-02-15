@@ -26,10 +26,10 @@ ros_gz_bridge  -->  /scan, /clock, /joint_states, /cmd_vel, /wheel_odom
   |     |-- uses custom Ackermann BT (no Spin recovery)
   |
   +-- minidog_frontier_explorer
-  |     |-- reads /map, TF
-  |     |-- sends NavigateToPose goals
-  |     |-- clears costmaps on abort streaks
-  |     |-- unstick mechanism (reverse cmd_vel)
+  |     |-- reads /map, TF (position + heading)
+  |     |-- heading-aware goal scoring (forward-biased)
+  |     |-- sends NavigateToPose goals (oriented toward goal)
+  |     |-- immediate unstick on any abort (reverse + clear costmaps)
   |
   +-- minidog_cmd_mux
   |     |-- /cmd_vel_manual + /cmd_vel_nav -> /cmd_vel
@@ -80,30 +80,36 @@ Three modes via `odom_source` launch argument:
 Individual lifecycle-managed nodes, configured via `config/nav2_slam.yaml`:
 
 - **Planner**: `NavfnPlanner` with A*, tolerance 1.0, `allow_unknown: true`
-- **Controller**: `RegulatedPurePursuitController`, 0.25 m/s, strict collision detection, reversing allowed
-- **Behavior tree**: custom `nav2_bt_ackermann.xml` (no Spin recovery, uses ClearCostmap + Wait + BackUp)
+- **Controller**: `RegulatedPurePursuitController`, 0.25 m/s, strict collision detection, **forward-only** (`allow_reversing: false`)
+- **Goal checker**: `xy_goal_tolerance: 0.60`, `yaw_goal_tolerance: 6.28` (full circle — Ackermann cannot rotate in place to match heading)
+- **Behavior tree**: custom `nav2_bt_ackermann.xml` (no Spin recovery, uses ClearCostmap + Wait + BackUp 1.0m at 0.15 m/s)
 - **Costmap inflation**: radius 0.25m (>= inscribed radius 0.225), cost_scaling_factor 3.0
+- **Costmap update rates**: global 2.0 Hz publish 1.0 Hz, local 2.0 Hz publish 1.0 Hz
 - **Lifecycle manager**: 10s bond_timeout, delayed 5s after server nodes
 
 ### Frontier explorer
 
 `minidog_frontier_explorer` (`frontier_explore.py`):
 
-**Goal selection**:
-1. Find frontier cells (free cells adjacent to unknown) in `/map`
+**Goal selection** (heading-aware, forward-biased):
+1. Find frontier cells (free cells adjacent to unknown) in `/map` (including map edges)
 2. Cluster via 8-connected BFS, discard clusters < 5 cells
-3. For each cluster, sample cells and check safety (no occupied cell within 5-cell margin)
-4. Pick the nearest safe, non-blocked cell to the robot (via TF lookup)
+3. For each cluster, stride-sample cells and check safety (no occupied cell within 5-cell margin)
+4. Score candidates: `(distance / sqrt(cluster_size)) * heading_penalty`
+   - `heading_penalty = 1.0 + heading_weight * |angle_diff| / pi` (default `heading_weight: 2.0`)
+   - Goals directly ahead: penalty 1.0x; to the side: 2.0x; behind: 3.0x
+5. Pick the lowest-scoring (best) safe, non-blocked candidate
+6. Set goal orientation toward the goal direction (tangential approach for Ackermann)
 
 **Robustness mechanisms**:
 - **Goal safety margin**: 5 cells (0.25m) clearance from occupied cells prevents goals near walls
-- **Blocked goal list**: aborted/timed-out goals are blacklisted (1.5m radius, 90s TTL)
-- **Costmap clearing**: after 3 consecutive aborts, calls `clear_entirely_*_costmap` services
-- **Unstick mechanism**: after 6 consecutive aborts, publishes reverse `cmd_vel` for 4s then clears costmaps
+- **Blocked goal list**: aborted/timed-out goals are blacklisted (1.5m radius, 90s TTL, ROS clock)
+- **Immediate unstick**: on **any** abort, immediately reverses for 5s at 0.20 m/s, then clears costmaps. Nav2's BT already tried its own recovery (clear + wait + backup 1m); if the goal still failed, the robot is truly stuck.
 - **Wall-time timeout**: goals stuck for 30s are canceled
-- **Completion detection**: 15 consecutive ticks with no frontier cells triggers `EXPLORATION COMPLETE`
+- **Completion detection**: 8 consecutive ticks (~16s) with no frontier cells triggers `EXPLORATION COMPLETE`
+- **All-blocked cycle limit**: if all frontiers are blocked for 3 consecutive clear-retry cycles, declares exploration complete (prevents infinite loops)
 
-**Distinguishes "no frontiers" from "all blocked"**: when frontiers exist but all are blocked, the blacklist is cleared and costmaps refreshed instead of declaring completion.
+**Distinguishes "no frontiers" from "all blocked"**: when frontiers exist but all are blocked, the blacklist is cleared and costmaps refreshed instead of declaring completion. Uses ROS sim-time throughout (no wall-clock `time.time()`).
 
 ### Simulation world
 

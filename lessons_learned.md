@@ -34,18 +34,15 @@ Problems encountered and resolved while developing the autonomous exploration sy
 
 ## 6. Robot getting stuck with no recovery
 
-**Problem**: After several consecutive aborted goals, the robot would stop making progress. Costmaps would have stale obstacle data and the planner couldn't find any viable path. The Ackermann robot cannot Spin in place, so the default Nav2 recovery behaviors were ineffective.
+**Problem**: After several consecutive aborted goals, the robot would stop making progress. Costmaps would have stale obstacle data and the planner couldn't find any viable path. The Ackermann robot cannot Spin in place, so the default Nav2 recovery behaviors were ineffective. A multi-stage approach (clear at 3 aborts, unstick at 6) was too slow — the robot would waste 2+ minutes before reversing when stuck in a corner.
 
-**Solution**: Implemented a multi-stage recovery system:
-- After 3 consecutive aborts: clear both global and local costmaps
-- After 6 consecutive aborts: publish reverse `Twist` command for 4 seconds (manual unstick), then clear costmaps
-- A custom behavior tree (`nav2_bt_ackermann.xml`) removes Spin recovery and uses only ClearCostmap + Wait + BackUp
+**Solution**: Immediate unstick on **any** abort. Nav2's BT already tried its own recovery (ClearCostmap → Wait → BackUp 1.0m). If the goal still aborted, the robot is truly stuck — reverse immediately at 0.20 m/s for 5s, then clear costmaps and pick a new goal. A custom behavior tree (`nav2_bt_ackermann.xml`) removes Spin recovery and uses only ClearCostmap + Wait + BackUp.
 
-## 7. Infinite costmap clearing loop
+## 7. Infinite costmap clearing loop (resolved by simplification)
 
-**Problem**: The `_tick()` method checked `if _consecutive_aborts == _max_aborts_before_clear` (3) and called `_clear_costmaps()`. But clearing didn't change the abort counter, so the condition remained true on every subsequent tick, creating an infinite clearing loop.
+**Problem**: The multi-stage abort escalation (`_consecutive_aborts == 3` → clear, `== 6` → unstick) was brittle. An exact-match condition (`== 3`) kept re-triggering because the counter wasn't advanced past the threshold, creating an infinite clearing loop.
 
-**Solution**: Restructured the logic so costmap clearing triggers once at the threshold, then the counter continues accumulating toward the unstick threshold (6). Only a successful goal or a completed unstick sequence resets the counter.
+**Solution**: Eliminated multi-stage escalation entirely. Now any abort triggers immediate unstick (reverse + clear). The abort counter resets to 0 when unstick starts, so there's no threshold logic to get stuck on. Simpler code, faster recovery.
 
 ## 8. Zombie processes from previous runs
 
@@ -87,7 +84,7 @@ Problems encountered and resolved while developing the autonomous exploration sy
 
 **Problem**: The `odom_stabilizer` node created a new Odometry message, then immediately overwrote it with a reference to the stored message, then mutated the timestamp in-place. This caused race conditions and timestamp corruption when other nodes held references to the same message object.
 
-**Solution**: Used `deepcopy()` to create a true copy of the stored odometry message before modifying its timestamp. This ensures each published message is independent and prevents shared-object mutation.
+**Solution**: Initially used `deepcopy()`, but this was unnecessarily heavy for a simple Odometry message. Replaced with targeted field copy — construct a new `Odometry()` and copy individual fields (header, pose, twist) explicitly. Also added staleness detection (`max_stale_sec: 0.5`) to stop republishing when the upstream RF2O source stops updating, preventing stale TF data from masking failures.
 
 ## 15. Double-increment of consecutive aborts counter
 
@@ -160,4 +157,32 @@ Problems encountered and resolved while developing the autonomous exploration sy
 
 **Solution**: Adjusted lookahead parameters to balanced values: `lookahead_dist: 0.6m` (was 0.5m), `min_lookahead_dist: 0.4m` (was 0.3m), `max_lookahead_dist: 1.0m` (was 0.8m), and `max_allowed_time_to_collision: 0.5s` (was 0.25s). These values provide better path tracking without the overshoot that causes circular behavior.
 
+## 25. Yaw goal tolerance for Ackermann robots
 
+**Problem**: `yaw_goal_tolerance: 0.50` (~29°) forced the Ackermann robot to oscillate at the goal position, endlessly trying to match the goal heading by driving forward arcs. The robot would reach the goal xy position, overshoot while turning, return, overshoot again — until the 30s timeout canceled the goal. Nearly every goal "failed" even though the robot was at the correct position.
+
+**Solution**: Set `yaw_goal_tolerance: 6.28` (full circle). An Ackermann robot physically cannot rotate in place, so requiring any specific heading at the goal is counterproductive. Accept any heading when the robot reaches the goal position. This single change improved the success rate from ~0% to ~80%.
+
+## 26. Heading-aware goal selection for forward-only navigation
+
+**Problem**: Random goal selection sent the robot to goals behind it, requiring wide U-turns or 3-point maneuvers that an Ackermann robot handles poorly. The planner would generate paths starting with a sharp turn, causing oscillation at the path start.
+
+**Solution**: Added heading-weighted scoring: `score = (distance / sqrt(cluster_size)) * (1 + heading_weight * |angle_diff| / pi)`. With `heading_weight: 2.0`, goals directly ahead cost 1x while goals behind cost 3x. Combined with setting goal orientation toward the goal direction (`atan2(gy-ry, gx-rx)`), this produces naturally smooth forward-moving paths.
+
+## 27. Forward-only navigation with reverse-only recovery
+
+**Problem**: Allowing `allow_reversing: true` in RegulatedPurePursuitController caused the planner to generate paths with reverse segments. For the Ackermann robot, reversing during path-following was unreliable — the robot would oscillate between forward and reverse, unable to smoothly track a path with direction changes.
+
+**Solution**: Set `allow_reversing: false` for normal navigation. Reversing only happens in two recovery contexts: (1) Nav2 BT's `BackUp` behavior (1.0m at 0.15 m/s), and (2) the explorer's unstick mechanism (direct `/cmd_vel_nav` publish, 0.20 m/s for 5s). Both bypass the RPP controller entirely.
+
+## 28. ROS sim-time vs wall-time consistency
+
+**Problem**: The explorer used `time.time()` (wall clock) for blocked goal expiry and unstick timing, but `self.get_clock().now()` (ROS sim-time) for other operations. When simulation ran slower or faster than real-time, blocked goals expired at wrong rates and unstick durations were inconsistent.
+
+**Solution**: Replaced all `time.time()` with `self.get_clock().now().nanoseconds`. Blocked goal TTLs, unstick end times, cooldowns, and goal timestamps all use ROS clock nanoseconds consistently. Removed `import time` entirely.
+
+## 29. Single-pass frontier computation per tick
+
+**Problem**: The `_tick()` method called `_find_frontier_clusters()` (which calls `list(self.map.data)`) and then `_pick_goal()` called it again. Each call involved a full O(width × height) scan of the occupancy grid and BFS clustering. This doubled the CPU cost per tick.
+
+**Solution**: Compute `tick_data = list(self.map.data)` and `tick_clusters = _find_frontier_clusters(tick_data)` once at the top of `_tick()`, then pass both as arguments to `_publish_status()` and `_pick_goal()`. Single allocation, single scan, shared across all functions.

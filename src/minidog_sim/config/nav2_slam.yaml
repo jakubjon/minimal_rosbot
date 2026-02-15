@@ -49,8 +49,8 @@ controller_server:
       use_rotate_to_heading: false
       rotate_to_heading_angular_vel: 1.2
       rotate_to_heading_min_angle: 6.28
-      # Ackermann needs reversing for recovery (can't spin in place).
-      allow_reversing: true
+      # Forward-only navigation; recovery uses BackUp behavior + unstick mechanism.
+      allow_reversing: false
       # Collision detection: be strict to prevent getting stuck near walls.
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 0.5

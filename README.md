@@ -81,10 +81,12 @@ Three-room arena (`minidog_world.sdf`):
 
 Autonomy is auto-enabled via `run.sh`. The frontier explorer:
 1. Finds frontier cells (free space adjacent to unknown) in the SLAM map
-2. Clusters them and picks the nearest **safe** cell (away from walls)
-3. Sends `NavigateToPose` goals to Nav2
-4. Handles aborts with costmap clearing and an unstick (reverse) mechanism
-5. Announces `EXPLORATION COMPLETE` when no frontiers remain for 15 consecutive ticks
+2. Clusters them via 8-connected BFS (discards clusters < 5 cells)
+3. Scores candidates by `distance / sqrt(cluster_size)` weighted by a **heading penalty** — goals ahead of the robot are strongly preferred over goals behind (forward-biased navigation)
+4. Sets goal orientation toward the goal direction for smooth tangential approach
+5. Sends `NavigateToPose` goals to Nav2 (forward-only, no reversing during path following)
+6. On **any** abort: immediately reverses for 5s (unstick), then clears costmaps
+7. Announces `EXPLORATION COMPLETE` when no frontiers remain for 8 consecutive ticks (~16s)
 
 ### Manual override
 
