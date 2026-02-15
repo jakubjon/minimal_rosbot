@@ -6,6 +6,7 @@ the nearest cluster centroid. Announces when all accessible areas
 have been mapped.
 """
 
+import json
 import math
 import time
 from collections import deque
@@ -22,8 +23,9 @@ from geometry_msgs.msg import PoseStamped
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Empty
+from rclpy.qos import QoSProfile
 
 
 @dataclass
@@ -181,6 +183,13 @@ class FrontierExplorer(Node):
         # Publisher for manual backup commands when stuck
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_nav', 10)
 
+        # Exploration status publishing for web monitoring
+        self._status_pub = self.create_publisher(
+            String,
+            '/exploration_status',
+            QoSProfile(depth=10)
+        )
+
         # Service clients for costmap clearing
         self._clear_global_cli = self.create_client(
             Empty, '/global_costmap/clear_entirely_global_costmap'
@@ -288,6 +297,43 @@ class FrontierExplorer(Node):
         # Set cooldown to allow costmaps to repopulate
         self._costmaps_clearing = True
         self._clear_start_time = time.time()
+
+    def _publish_status(self):
+        """Publish exploration status as JSON for web monitoring."""
+        robot_pos = self._get_robot_position()
+        clusters = self._find_frontier_clusters()
+
+        goal_dist = None
+        if robot_pos and self.last_goal_xy:
+            gx, gy = self.last_goal_xy
+            goal_dist = math.hypot(gx - robot_pos[0], gy - robot_pos[1])
+
+        status = {
+            "timestamp": time.time(),
+            "enabled": self.enabled,
+            "goals_sent_total": self._goals_sent_total,
+            "goals_succeeded": self._goals_succeeded,
+            "success_rate": (
+                self._goals_succeeded / self._goals_sent_total
+                if self._goals_sent_total > 0 else 0.0
+            ),
+            "consecutive_aborts": self._consecutive_aborts,
+            "no_frontier_streak": self._no_frontier_streak,
+            "done_threshold": self._done_threshold,
+            "exploration_complete": self._done_announced,
+            "goal_in_flight": self.goal_in_flight,
+            "unstick_active": self._unstick_active,
+            "costmaps_clearing": self._costmaps_clearing,
+            "blocked_goals_count": len(self.blocked_goals),
+            "frontier_clusters": len(clusters),
+            "last_goal_xy": list(self.last_goal_xy) if self.last_goal_xy else None,
+            "robot_position": list(robot_pos) if robot_pos else None,
+            "goal_distance": goal_dist
+        }
+
+        msg = String()
+        msg.data = json.dumps(status)
+        self._status_pub.publish(msg)
 
     # ------------------------------------------------------------------
     # TF-based robot position
@@ -437,6 +483,9 @@ class FrontierExplorer(Node):
     # Main tick
     # ------------------------------------------------------------------
     def _tick(self):
+        # Publish status for web monitoring (always publish, even if disabled)
+        self._publish_status()
+
         if not self.enabled:
             return
         if self._done_announced:

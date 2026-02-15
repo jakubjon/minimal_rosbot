@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -8,11 +9,13 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import OccupancyGrid, Odometry
+from geometry_msgs.msg import Twist, PoseStamped
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from tf2_msgs.msg import TFMessage
+from action_msgs.msg import GoalStatusArray
+import math
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -61,6 +64,26 @@ def _odom_summary(msg: Odometry) -> str:
     return f"frame={msg.header.frame_id} child={msg.child_frame_id} x={p.x:0.2f} y={p.y:0.2f}"
 
 
+def _quaternion_to_yaw(q) -> float:
+    """Convert quaternion to yaw angle in radians."""
+    siny_cosp = 2 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def _get_robot_pose(odom_msg: Odometry) -> Tuple[float, float, float]:
+    """Extract (x, y, yaw) from odometry message."""
+    p = odom_msg.pose.pose.position
+    q = odom_msg.pose.pose.orientation
+    yaw = _quaternion_to_yaw(q)
+    return (p.x, p.y, yaw)
+
+
+def _get_robot_velocity(odom_msg: Odometry) -> Tuple[float, float]:
+    """Extract (linear_x, angular_z) from odometry message."""
+    return (odom_msg.twist.twist.linear.x, odom_msg.twist.twist.angular.z)
+
+
 class MinidogWebNode(Node):
     def __init__(self, use_sim_time: bool, topics: Dict[str, str]):
         super().__init__("minidog_webapp")
@@ -88,6 +111,12 @@ class MinidogWebNode(Node):
         self._sub(OccupancyGrid, topics["map"], "map", qos=map_qos)
 
         self._sub(TFMessage, topics["tf"], "tf", qos=QoSProfile(depth=10))
+
+        # Navigation and exploration status
+        self._sub(GoalStatusArray, topics["navigate_to_pose_status"], "nav_status", qos=QoSProfile(depth=10))
+        self._sub(Path, topics["plan"], "plan", qos=QoSProfile(depth=10))
+        self._sub(Odometry, topics["odom"], "odom", qos=qos_profile_sensor_data)
+        self._sub(String, topics["exploration_status"], "exploration_status", qos=QoSProfile(depth=10))
 
     def _sub(self, msg_type, topic: str, key: str, qos: QoSProfile):
         def cb(msg):
@@ -132,6 +161,10 @@ def get_ros_node() -> Tuple[MinidogWebNode, SingleThreadedExecutor]:
         "map": "/map",
         "tf": "/tf",
         "wheel_odom": "/wheel_odom",
+        "odom": "/odom",
+        "navigate_to_pose_status": "/navigate_to_pose/_action/status",
+        "plan": "/plan",
+        "exploration_status": "/exploration_status",
     }
 
     node = MinidogWebNode(use_sim_time=True, topics=topics)
@@ -153,6 +186,131 @@ node, _exec = get_ros_node()
 state = node.get_state_snapshot()
 
 st.title("minidog web")
+
+# Robot State Section
+st.subheader("🤖 Robot State")
+state_col1, state_col2, state_col3 = st.columns(3)
+
+with state_col1:
+    st.markdown("**Position & Orientation**")
+    odom_state = state.get("odom")
+    if odom_state and odom_state.last_msg:
+        x, y, yaw = _get_robot_pose(odom_state.last_msg)
+        st.metric("X", f"{x:.2f} m")
+        st.metric("Y", f"{y:.2f} m")
+        st.metric("Yaw", f"{math.degrees(yaw):.1f}°")
+        st.caption(f"Age: {_fmt_age(_age_s(odom_state.last_recv_wall_time))}")
+    else:
+        st.warning("No odometry data")
+
+with state_col2:
+    st.markdown("**Velocity**")
+    if odom_state and odom_state.last_msg:
+        lin_x, ang_z = _get_robot_velocity(odom_state.last_msg)
+        st.metric("Linear X", f"{lin_x:.2f} m/s")
+        st.metric("Angular Z", f"{ang_z:.2f} rad/s")
+        speed = abs(lin_x)
+        if speed > 0.01:
+            st.success("🟢 Moving")
+        else:
+            st.info("🟡 Stopped")
+    else:
+        st.warning("No velocity data")
+
+with state_col3:
+    st.markdown("**Navigation Status**")
+    nav_status = state.get("nav_status")
+    if nav_status and nav_status.last_msg and len(nav_status.last_msg.status_list) > 0:
+        latest_status = nav_status.last_msg.status_list[-1]
+        status_text = {
+            0: "Unknown",
+            1: "Accepted",
+            2: "Executing",
+            3: "Canceling",
+            4: "Succeeded",
+            5: "Canceled",
+            6: "Aborted"
+        }.get(latest_status.status, f"Status {latest_status.status}")
+
+        if latest_status.status == 2:
+            st.success(f"✅ {status_text}")
+        elif latest_status.status == 4:
+            st.info(f"🎯 {status_text}")
+        elif latest_status.status == 6:
+            st.error(f"❌ {status_text}")
+        else:
+            st.warning(f"⚠️ {status_text}")
+
+        plan_state = state.get("plan")
+        if plan_state and plan_state.last_msg:
+            plan_len = len(plan_state.last_msg.poses)
+            st.metric("Path points", plan_len)
+    else:
+        st.info("No active goal")
+
+    # Autonomy status
+    auto_state = state.get("autonomy_enabled")
+    if auto_state and auto_state.last_msg:
+        if auto_state.last_msg.data:
+            st.success("🤖 Autonomy ON")
+        else:
+            st.warning("🎮 Manual mode")
+
+st.divider()
+
+# Exploration Stats Section
+st.subheader("🗺️ Frontier Exploration")
+explore_state = state.get("exploration_status")
+
+if explore_state and explore_state.last_msg:
+    try:
+        stats = json.loads(explore_state.last_msg.data)
+
+        exp_col1, exp_col2, exp_col3, exp_col4 = st.columns(4)
+
+        with exp_col1:
+            st.metric("Goals Sent", stats["goals_sent_total"])
+            st.metric("Goals Succeeded", stats["goals_succeeded"])
+            success_rate = stats["success_rate"] * 100
+            st.metric("Success Rate", f"{success_rate:.1f}%")
+
+        with exp_col2:
+            st.metric("Frontier Clusters", stats["frontier_clusters"])
+            st.metric("Blocked Goals", stats["blocked_goals_count"])
+            if stats["goal_distance"]:
+                st.metric("Goal Distance", f"{stats['goal_distance']:.2f}m")
+            else:
+                st.metric("Goal Distance", "—")
+
+        with exp_col3:
+            st.metric("Consecutive Aborts", stats["consecutive_aborts"])
+            progress = f"{stats['no_frontier_streak']}/{stats['done_threshold']}"
+            st.metric("No Frontier Streak", progress)
+
+        with exp_col4:
+            # Status indicators
+            if stats["exploration_complete"]:
+                st.success("✅ Exploration Complete!")
+            elif stats["goal_in_flight"]:
+                st.info("🎯 Goal In Flight")
+            elif not stats["enabled"]:
+                st.warning("⏸️ Autonomy Disabled")
+            else:
+                st.success("🔍 Exploring")
+
+            if stats["unstick_active"]:
+                st.warning("⚠️ Unsticking (reversing)")
+            if stats["costmaps_clearing"]:
+                st.warning("🔄 Clearing costmaps")
+
+        st.caption(f"Last update: {_fmt_age(_age_s(explore_state.last_recv_wall_time))}")
+
+    except json.JSONDecodeError as e:
+        st.error(f"Failed to parse exploration status: {e}")
+else:
+    st.info("No exploration status available")
+
+st.divider()
 
 col1, col2 = st.columns([1, 2], gap="large")
 
@@ -241,11 +399,15 @@ with col2:
         ("scan", "/scan", 0.5, _scan_summary),
         ("map", "/map", 5.0, _map_summary),
         ("tf", "/tf", 0.5, lambda m: f"transforms={len(m.transforms)}"),
+        ("odom", "/odom", 1.0, _odom_summary),
+        ("wheel_odom", "/wheel_odom", 1.0, _odom_summary),
+        ("cmd_vel", "/cmd_vel", 1.0, _twist_summary),
         ("cmd_vel_manual", "/cmd_vel_manual", 1.0, _twist_summary),
         ("cmd_vel_nav", "/cmd_vel_nav", 1.0, _twist_summary),
-        ("cmd_vel", "/cmd_vel", 1.0, _twist_summary),
-        ("wheel_odom", "/wheel_odom", 1.0, _odom_summary),
+        ("plan", "/plan", 2.0, lambda m: f"waypoints={len(m.poses)}"),
+        ("nav_status", "/navigate_to_pose/_action/status", 2.0, lambda m: f"goals={len(m.status_list)}"),
         ("autonomy_enabled", "/autonomy_enabled", 1.0, lambda m: f"data={bool(m.data)}"),
+        ("exploration_status", "/exploration_status", 3.0, lambda m: f"data_len={len(m.data)}"),
     ]
 
     rows = []
