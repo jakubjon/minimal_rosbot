@@ -8,7 +8,6 @@ have been mapped.
 
 import json
 import math
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -74,7 +73,7 @@ class FrontierExplorer(Node):
         self.declare_parameter("blocked_goal_radius_m", 1.5)
         self.declare_parameter("blocked_goal_ttl_sec", 90.0)
         self.declare_parameter("start_enabled", True)
-        self.declare_parameter("done_threshold_ticks", 15)
+        self.declare_parameter("done_threshold_ticks", 8)
         # Minimum cluster size (cells) to be considered a valid exploration target
         self.declare_parameter("min_cluster_size", 5)
         # Minimum distance from robot to goal (avoids useless close goals at startup)
@@ -85,7 +84,7 @@ class FrontierExplorer(Node):
         self.declare_parameter("unstick_reverse_speed_mps", 0.15)
         self.declare_parameter("unstick_duration_sec", 4.0)
         # Minimum travel time before considering a goal "succeeded too fast"
-        self.declare_parameter("min_travel_time_sec", 3.0)
+        self.declare_parameter("min_travel_time_sec", 1.0)
         # Maximum cells to sample per frontier cluster
         self.declare_parameter("cluster_sample_size", 80)
         # Occupancy threshold for considering a cell as occupied
@@ -153,8 +152,9 @@ class FrontierExplorer(Node):
         self.nav = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.goal_in_flight = False
         self.last_goal_xy: Optional[Tuple[float, float]] = None
-        self._goal_sent_wall_time: float = 0.0
-        self.blocked_goals: List[Tuple[float, float, float]] = []
+        self._goal_sent_ns: int = 0  # ROS clock nanoseconds when goal was sent
+        # blocked_goals: (x, y, expiry_ns) where expiry_ns is ROS clock nanoseconds
+        self.blocked_goals: List[Tuple[float, float, int]] = []
 
         # TF2 for robot position
         self.tf_buffer = tf2_ros.Buffer()
@@ -168,17 +168,21 @@ class FrontierExplorer(Node):
         self._goals_succeeded: int = 0
         self._current_goal_handle = None
 
+        # All-blocked cycle counter to prevent infinite clear-retry loops
+        self._all_blocked_cycles: int = 0
+        self._max_all_blocked_cycles: int = 3
+
         # Abort streak tracking for costmap clearing and unstick
         self._consecutive_aborts: int = 0
         self._max_aborts_before_clear: int = 3
         self._max_aborts_before_unstick: int = 6
         self._unstick_active: bool = False
-        self._unstick_end_time: float = 0.0
+        self._unstick_end_ns: int = 0  # ROS clock nanoseconds
 
         # Costmap clearing cooldown
         self._costmaps_clearing: bool = False
-        self._clear_start_time: float = 0.0
-        self._clear_cooldown_sec: float = 2.0
+        self._clear_start_ns: int = 0  # ROS clock nanoseconds
+        self._clear_cooldown_ns: int = int(2.0 * 1e9)  # 2 seconds in nanoseconds
 
         # Publisher for manual backup commands when stuck
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_nav', 10)
@@ -296,12 +300,11 @@ class FrontierExplorer(Node):
             self._clear_local_cli.call_async(req)
         # Set cooldown to allow costmaps to repopulate
         self._costmaps_clearing = True
-        self._clear_start_time = time.time()
+        self._clear_start_ns = self.get_clock().now().nanoseconds
 
-    def _publish_status(self):
+    def _publish_status(self, clusters: List[FrontierCluster]):
         """Publish exploration status as JSON for web monitoring."""
         robot_pos = self._get_robot_position()
-        clusters = self._find_frontier_clusters()
 
         goal_dist = None
         if robot_pos and self.last_goal_xy:
@@ -309,7 +312,7 @@ class FrontierExplorer(Node):
             goal_dist = math.hypot(gx - robot_pos[0], gy - robot_pos[1])
 
         status = {
-            "timestamp": time.time(),
+            "timestamp": self.get_clock().now().nanoseconds / 1e9,
             "enabled": self.enabled,
             "goals_sent_total": self._goals_sent_total,
             "goals_succeeded": self._goals_succeeded,
@@ -353,19 +356,22 @@ class FrontierExplorer(Node):
     # ------------------------------------------------------------------
     # Frontier clustering
     # ------------------------------------------------------------------
-    def _find_frontier_clusters(self) -> List[FrontierCluster]:
-        """Find all frontier cells and cluster them via BFS."""
-        if self.map is None or self.meta is None:
+    def _find_frontier_clusters(self, data: list) -> List[FrontierCluster]:
+        """Find all frontier cells and cluster them via BFS.
+
+        Args:
+            data: Pre-converted list of occupancy grid values.
+        """
+        if self.meta is None:
             return []
 
-        data = list(self.map.data)
         w = self.meta.width
         h = self.meta.height
 
-        # Step 1: find all frontier cells
+        # Step 1: find all frontier cells (including map edges)
         frontier_set = set()
-        for y in range(1, h - 1):
-            for x in range(1, w - 1):
+        for y in range(h):
+            for x in range(w):
                 if self._is_frontier_cell(x, y, data):
                     frontier_set.add((x, y))
 
@@ -417,21 +423,29 @@ class FrontierExplorer(Node):
                 return True
         return False
 
-    def _pick_goal(self) -> Optional[Tuple[float, float]]:
+    def _pick_goal(
+        self, clusters: List[FrontierCluster], data: list
+    ) -> Optional[Tuple[float, float]]:
         """Pick the best exploration goal from frontier clusters.
+
+        Scores candidates by distance weighted by cluster size — prefers
+        large nearby frontiers over tiny close ones.
+
+        Args:
+            clusters: Pre-computed frontier clusters.
+            data: Pre-converted list of occupancy grid values.
 
         Returns:
             (x, y) goal in world coordinates, or None if no frontiers exist.
-            Returns "BLOCKED" sentinel (stored in self._all_blocked) when
-            frontiers exist but are all blocked — this is NOT "done".
+            Sets self._all_blocked when frontiers exist but are all blocked.
         """
         # Expire old blocked goals
-        now_wall = time.time()
+        now = self.get_clock().now()
+        now_ns = now.nanoseconds
         self.blocked_goals = [
-            (x, y, exp) for (x, y, exp) in self.blocked_goals if exp > now_wall
+            (x, y, exp) for (x, y, exp) in self.blocked_goals if exp > now_ns
         ]
 
-        clusters = self._find_frontier_clusters()
         if not clusters:
             self._all_blocked = False
             return None
@@ -445,16 +459,17 @@ class FrontierExplorer(Node):
             return None
 
         rx, ry = robot_pos
-        data = list(self.map.data) if self.map else []
 
-        # Pick the nearest SAFE frontier cell to the robot.
+        # Pick the best SAFE frontier cell using distance / sqrt(cluster_size).
         # Safe = not blocked, far enough from walls, far enough from robot.
-        candidates: List[Tuple[float, float, float]] = []  # (dist, wx, wy)
+        candidates: List[Tuple[float, float, float]] = []  # (score, wx, wy)
         for cluster in clusters:
+            cluster_size = len(cluster.cells)
+            size_factor = math.sqrt(cluster_size)
             # Sample spatially distributed cells using stride-based sampling
             max_samples = self.cluster_sample_size
-            if len(cluster.cells) > max_samples:
-                stride = len(cluster.cells) // max_samples
+            if cluster_size > max_samples:
+                stride = cluster_size // max_samples
                 sample = cluster.cells[::stride]
             else:
                 sample = cluster.cells
@@ -468,7 +483,9 @@ class FrontierExplorer(Node):
                 # Safety check: is the cell far enough from walls?
                 if data and self.meta and not self._is_cell_safe(cell_x, cell_y, data):
                     continue
-                candidates.append((d, wx, wy))
+                # Score: lower is better. Prefer large clusters (divide by size).
+                score = d / size_factor
+                candidates.append((score, wx, wy))
 
         if not candidates:
             # Frontiers exist but all blocked — NOT done, just waiting
@@ -483,8 +500,16 @@ class FrontierExplorer(Node):
     # Main tick
     # ------------------------------------------------------------------
     def _tick(self):
+        # Compute map data and clusters once per tick
+        if self.map is not None and self.meta is not None:
+            tick_data = list(self.map.data)
+            tick_clusters = self._find_frontier_clusters(tick_data)
+        else:
+            tick_data = []
+            tick_clusters = []
+
         # Publish status for web monitoring (always publish, even if disabled)
-        self._publish_status()
+        self._publish_status(tick_clusters)
 
         if not self.enabled:
             return
@@ -500,7 +525,7 @@ class FrontierExplorer(Node):
                 self.get_logger().info("Unstick preempted (autonomy disabled or goal completed)")
                 return
 
-            if time.time() < self._unstick_end_time:
+            if self.get_clock().now().nanoseconds < self._unstick_end_ns:
                 cmd = Twist()
                 cmd.linear.x = -self.unstick_reverse_speed  # Reverse slowly
                 self._cmd_vel_pub.publish(cmd)
@@ -517,15 +542,15 @@ class FrontierExplorer(Node):
 
         # Wait for costmap clearing cooldown
         if self._costmaps_clearing:
-            if time.time() - self._clear_start_time < self._clear_cooldown_sec:
+            if self.get_clock().now().nanoseconds - self._clear_start_ns < self._clear_cooldown_ns:
                 return  # Wait for costmaps to repopulate
             self._costmaps_clearing = False
             self.get_logger().info("Costmap clearing cooldown complete")
 
         if self.goal_in_flight:
-            # Cancel goals stuck for too long (wall time)
-            if self._goal_sent_wall_time > 0:
-                elapsed = time.time() - self._goal_sent_wall_time
+            # Cancel goals stuck for too long
+            if self._goal_sent_ns > 0:
+                elapsed = (self.get_clock().now().nanoseconds - self._goal_sent_ns) / 1e9
                 if elapsed > self._goal_wall_timeout_sec:
                     self.get_logger().warn(
                         f"Goal stuck for {elapsed:.0f}s wall time; canceling"
@@ -539,9 +564,8 @@ class FrontierExplorer(Node):
                     self._consecutive_aborts += 1
                     if self.last_goal_xy:
                         bx, by = self.last_goal_xy
-                        self.blocked_goals.append(
-                            (bx, by, time.time() + self.blocked_goal_ttl_sec)
-                        )
+                        expiry_ns = self.get_clock().now().nanoseconds + int(self.blocked_goal_ttl_sec * 1e9)
+                        self.blocked_goals.append((bx, by, expiry_ns))
             return
         if self.map is None:
             return
@@ -562,20 +586,31 @@ class FrontierExplorer(Node):
                 f"Stuck: {self._consecutive_aborts} aborts, reversing to unstick"
             )
             self._unstick_active = True
-            self._unstick_end_time = time.time() + self.unstick_duration
+            self._unstick_end_ns = self.get_clock().now().nanoseconds + int(self.unstick_duration * 1e9)
             self._consecutive_aborts = 0
             return
-        # Clear costmaps at exactly N aborts (use exact match, not modulo)
+        # Clear costmaps at exactly N aborts; advance counter to avoid re-triggering
         if self._consecutive_aborts == self._max_aborts_before_clear:
             self._clear_costmaps()
-            # Don't reset counter, don't return - proceed to pick a goal
+            self._consecutive_aborts += 1  # Move past exact match
+            # Return to let costmaps repopulate before picking a new goal
+            return
 
-        goal_xy = self._pick_goal()
+        goal_xy = self._pick_goal(tick_clusters, tick_data)
         if goal_xy is None:
             if hasattr(self, '_all_blocked') and self._all_blocked:
-                if self.blocked_goals:
+                self._all_blocked_cycles += 1
+                if self._all_blocked_cycles >= self._max_all_blocked_cycles:
                     self.get_logger().info(
-                        f"All {len(self.blocked_goals)} blocked goals -- clearing & retrying"
+                        f"All frontiers blocked for {self._all_blocked_cycles} cycles; "
+                        f"declaring exploration complete"
+                    )
+                    self._done_announced = True
+                elif self.blocked_goals:
+                    self.get_logger().info(
+                        f"All {len(self.blocked_goals)} blocked goals "
+                        f"(cycle {self._all_blocked_cycles}/{self._max_all_blocked_cycles}) "
+                        f"-- clearing & retrying"
                     )
                     self.blocked_goals.clear()
                     self._clear_costmaps()
@@ -606,8 +641,9 @@ class FrontierExplorer(Node):
                 )
             return
 
-        # Reset streak when frontiers found
+        # Reset streaks when a goal is picked
         self._no_frontier_streak = 0
+        self._all_blocked_cycles = 0
 
         gx, gy = goal_xy
         goal = NavigateToPose.Goal()
@@ -647,12 +683,11 @@ class FrontierExplorer(Node):
             self.goal_in_flight = False
             if self.last_goal_xy:
                 bx, by = self.last_goal_xy
-                self.blocked_goals.append(
-                    (bx, by, time.time() + self.blocked_goal_ttl_sec)
-                )
+                expiry_ns = self.get_clock().now().nanoseconds + int(self.blocked_goal_ttl_sec * 1e9)
+                self.blocked_goals.append((bx, by, expiry_ns))
             return
         self._current_goal_handle = goal_handle
-        self._goal_sent_wall_time = time.time()
+        self._goal_sent_ns = self.get_clock().now().nanoseconds
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self._on_result)
 
@@ -664,9 +699,10 @@ class FrontierExplorer(Node):
 
             result = future.result()
             status = result.status
+            now_ns = self.get_clock().now().nanoseconds
             elapsed = (
-                time.time() - self._goal_sent_wall_time
-                if self._goal_sent_wall_time > 0
+                (now_ns - self._goal_sent_ns) / 1e9
+                if self._goal_sent_ns > 0
                 else 999.0
             )
             if status == GoalStatus.STATUS_SUCCEEDED:
@@ -676,9 +712,8 @@ class FrontierExplorer(Node):
                     )
                     if self.last_goal_xy:
                         bx, by = self.last_goal_xy
-                        self.blocked_goals.append(
-                            (bx, by, time.time() + self.blocked_goal_ttl_sec)
-                        )
+                        expiry_ns = now_ns + int(self.blocked_goal_ttl_sec * 1e9)
+                        self.blocked_goals.append((bx, by, expiry_ns))
                 else:
                     self._goals_succeeded += 1
                     self._consecutive_aborts = 0
@@ -693,9 +728,8 @@ class FrontierExplorer(Node):
                 )
                 if self.last_goal_xy:
                     bx, by = self.last_goal_xy
-                    self.blocked_goals.append(
-                        (bx, by, time.time() + self.blocked_goal_ttl_sec)
-                    )
+                    expiry_ns = now_ns + int(self.blocked_goal_ttl_sec * 1e9)
+                    self.blocked_goals.append((bx, by, expiry_ns))
             elif status == GoalStatus.STATUS_CANCELED:
                 self.get_logger().info("Goal CANCELED")
             else:
