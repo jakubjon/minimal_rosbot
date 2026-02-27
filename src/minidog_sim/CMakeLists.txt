@@ -10,6 +10,7 @@ install(DIRECTORY launch urdf config rviz worlds models webapp
 install(PROGRAMS
   minidog_sim/scan_filter.py
   minidog_sim/odom_stabilizer.py
+  minidog_sim/data_relay.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

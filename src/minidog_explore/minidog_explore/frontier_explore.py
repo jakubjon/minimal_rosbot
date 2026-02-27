@@ -66,7 +66,7 @@ class FrontierExplorer(Node):
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("enable_topic", "/autonomy_enabled")
         self.declare_parameter("goal_frame", "map")
-        self.declare_parameter("robot_frame", "minidog/base_footprint")
+        self.declare_parameter("robot_frame", "base_link")
         self.declare_parameter("min_frontier_cells", 3)
         self.declare_parameter("goal_cooldown_sec", 2.0)
         self.declare_parameter("goal_margin_cells", 3)

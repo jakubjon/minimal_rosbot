@@ -4,8 +4,8 @@ slam_toolbox:
 
     # Frames must match the sim:
     # /odom: frame_id=minidog/odom, child_frame_id=minidog/base_footprint
-    odom_frame: "minidog/odom"
-    base_frame: "minidog/base_footprint"
+    odom_frame: "odom"
+    base_frame: "base_link"
     map_frame: "map"
 
     # Input scan

@@ -1,104 +1,117 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     quiet_terminal = LaunchConfiguration("quiet_terminal")
     enable_rviz_gui = LaunchConfiguration("enable_rviz_gui")
+    data_source = LaunchConfiguration("data_source")
+    robot_type = LaunchConfiguration("robot_type")
 
     pkg_share = FindPackageShare("minidog_sim")
-    robot_xacro_path = PathJoinSubstitution([pkg_share, "urdf", "robot.urdf.xacro"])
-    rviz_config_path = PathJoinSubstitution([pkg_share, "rviz", "robot.rviz"])
 
-    robot_description = ParameterValue(
-        Command([FindExecutable(name="xacro"), " ", robot_xacro_path]),
+    # Select URDF based on robot_type
+    diffbot_xacro = PathJoinSubstitution([pkg_share, "urdf", "diffbot.urdf.xacro"])
+    minidog_xacro = PathJoinSubstitution([pkg_share, "urdf", "robot.urdf.xacro"])
+
+    rviz_config_path = PathJoinSubstitution([pkg_share, "rviz", "robot.rviz"])
+    rviz_bag_config_path = PathJoinSubstitution([pkg_share, "rviz", "robot_bag.rviz"])
+
+    # Conditions
+    _is_diffbot_sim = PythonExpression(["'", data_source, "' == 'sim' and '", robot_type, "' == 'diffbot'"])
+    _is_acker_sim = PythonExpression(["'", data_source, "' == 'sim' and '", robot_type, "' != 'diffbot'"])
+
+    diffbot_description = ParameterValue(
+        Command([FindExecutable(name="xacro"), " ", diffbot_xacro]),
+        value_type=str,
+    )
+    minidog_description = ParameterValue(
+        Command([FindExecutable(name="xacro"), " ", minidog_xacro]),
         value_type=str,
     )
 
-    # robot_state_publisher ALWAYS runs (needed for TF tree).
-    rsp_screen = Node(
-        package="robot_state_publisher",
-        executable="robot_state_publisher",
-        output="screen",
-        parameters=[
-            {
-                "use_sim_time": use_sim_time,
-                "robot_description": robot_description,
-                # Gazebo publishes odom / base_footprint with model-name prefix.
-                # Match that so RViz has a connected TF tree.
-                "frame_prefix": "minidog/",
-            }
-        ],
-        condition=UnlessCondition(quiet_terminal),
-    )
-    rsp_log = Node(
+    # RSP only runs in sim mode (bag mode gets TF from data_relay)
+    rsp_diffbot = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
         output="log",
-        parameters=[
-            {
-                "use_sim_time": use_sim_time,
-                "robot_description": robot_description,
-                "frame_prefix": "minidog/",
-            }
-        ],
-        condition=IfCondition(quiet_terminal),
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "robot_description": diffbot_description,
+        }],
+        condition=IfCondition(_is_diffbot_sim),
     )
 
-    # Gazebo (via ros_gz_bridge) publishes /scan with frame_id: "minidog/base_footprint/ouster".
-    # Provide that TF frame so slam_toolbox + RViz can transform scans.
-    # ALWAYS runs (needed for SLAM).
-    ouster_frame_tf_screen = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="minidog_ouster_static_tf",
-        output="screen",
-        arguments=[
-            "--x", "0.1",
-            "--y", "0.0",
-            "--z", "0.16",
-            "--roll", "0.0",
-            "--pitch", "0.0",
-            "--yaw", "0.0",
-            "--frame-id", "minidog/base_footprint",
-            "--child-frame-id", "minidog/base_footprint/ouster",
-        ],
-        parameters=[{"use_sim_time": use_sim_time}],
-        condition=UnlessCondition(quiet_terminal),
+    rsp_ackermann = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        output="log",
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "robot_description": minidog_description,
+        }],
+        condition=IfCondition(_is_acker_sim),
     )
-    ouster_frame_tf_log = Node(
+
+    # Gazebo publishes scans with frame_id "{model_name}/base_footprint/ouster".
+    # Provide static TF from RSP's base_footprint to Gazebo's scan frame.
+    ouster_tf_diffbot = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
-        name="minidog_ouster_static_tf",
+        name="ouster_static_tf",
         output="log",
         arguments=[
-            "--x", "0.1",
-            "--y", "0.0",
-            "--z", "0.16",
-            "--roll", "0.0",
-            "--pitch", "0.0",
-            "--yaw", "0.0",
-            "--frame-id", "minidog/base_footprint",
+            "--x", "0.15", "--y", "0.0", "--z", "0.20",
+            "--roll", "0.0", "--pitch", "0.0", "--yaw", "0.0",
+            "--frame-id", "base_footprint",
+            "--child-frame-id", "diffbot/base_footprint/ouster",
+        ],
+        parameters=[{"use_sim_time": use_sim_time}],
+        condition=IfCondition(_is_diffbot_sim),
+    )
+
+    ouster_tf_ackermann = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="ouster_static_tf",
+        output="log",
+        arguments=[
+            "--x", "0.1", "--y", "0.0", "--z", "0.16",
+            "--roll", "0.0", "--pitch", "0.0", "--yaw", "0.0",
+            "--frame-id", "base_footprint",
             "--child-frame-id", "minidog/base_footprint/ouster",
         ],
         parameters=[{"use_sim_time": use_sim_time}],
-        condition=IfCondition(quiet_terminal),
+        condition=IfCondition(_is_acker_sim),
     )
 
-    # RViz GUI is optional (heavy on CPU/GPU in WSL2).
-    rviz_gui = Node(
+    # RViz GUI — select config based on data_source
+    rviz_sim = Node(
         package="rviz2",
         executable="rviz2",
         output="log",
         arguments=["-d", rviz_config_path],
         parameters=[{"use_sim_time": use_sim_time}],
-        condition=IfCondition(enable_rviz_gui),
+        condition=IfCondition(PythonExpression([
+            "'", enable_rviz_gui, "' == 'true' and '", data_source, "' == 'sim'"
+        ])),
+    )
+
+    rviz_bag = Node(
+        package="rviz2",
+        executable="rviz2",
+        output="log",
+        arguments=["-d", rviz_bag_config_path],
+        parameters=[{"use_sim_time": use_sim_time}],
+        condition=IfCondition(PythonExpression([
+            "'", enable_rviz_gui, "' == 'true' and '", data_source, "' == 'bag'"
+        ])),
     )
 
     return LaunchDescription(
@@ -106,12 +119,15 @@ def generate_launch_description():
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("quiet_terminal", default_value="false"),
             DeclareLaunchArgument("enable_rviz_gui", default_value="true"),
-            # TF publishers always run (needed by SLAM + Nav2)
-            rsp_screen,
-            rsp_log,
-            ouster_frame_tf_screen,
-            ouster_frame_tf_log,
-            # RViz GUI is conditional
-            rviz_gui,
+            DeclareLaunchArgument("data_source", default_value="sim"),
+            DeclareLaunchArgument("robot_type", default_value="diffbot"),
+            # RSP + static TF (sim only)
+            rsp_diffbot,
+            rsp_ackermann,
+            ouster_tf_diffbot,
+            ouster_tf_ackermann,
+            # RViz (conditional on data_source)
+            rviz_sim,
+            rviz_bag,
         ]
     )

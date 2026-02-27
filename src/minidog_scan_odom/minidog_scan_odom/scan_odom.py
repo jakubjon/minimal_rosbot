@@ -33,8 +33,8 @@ class ScanOdom(Node):
 
         # Parameters
         self.declare_parameter("mode", "wheel")  # "wheel" or "scan"
-        self.declare_parameter("odom_frame_id", "minidog/odom")
-        self.declare_parameter("base_frame_id", "minidog/base_footprint")
+        self.declare_parameter("odom_frame_id", "odom")
+        self.declare_parameter("base_frame_id", "base_footprint")
         self.declare_parameter("laser_scan_topic", "/scan")
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("wheel_odom_topic", "/wheel_odom")

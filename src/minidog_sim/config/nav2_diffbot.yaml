@@ -2,7 +2,7 @@
   ros__parameters:
     use_sim_time: true
 
-    # Frames (match minidog_sim)
+    # Frames (standard ROS convention)
     global_frame: map
     robot_base_frame: base_link
     odom_frame: odom
@@ -13,13 +13,10 @@
 controller_server:
   ros__parameters:
     use_sim_time: true
-    # Increased to 10Hz for better Ackermann steering control (reduced oscillations)
     controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    # Allow 10s of controller failures before giving up — WSL2 can cause
-    # momentary stalls that shouldn't abort the goal.
     failure_tolerance: 10.0
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]
@@ -32,9 +29,9 @@ controller_server:
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.60
-      # Ackermann robot can't rotate in place — accept any heading at goal.
-      yaw_goal_tolerance: 6.28
+      xy_goal_tolerance: 0.40
+      # Diff drive / quadruped can rotate to heading.
+      yaw_goal_tolerance: 0.5
       stateful: true
 
     FollowPath:
@@ -45,16 +42,13 @@ controller_server:
       min_lookahead_dist: 0.4
       max_lookahead_dist: 1.0
       use_velocity_scaled_lookahead_dist: true
-      # Ackermann robot cannot rotate in place — disable in-place rotation.
-      use_rotate_to_heading: false
+      # Diff drive can rotate in place — enable rotate-to-heading.
+      use_rotate_to_heading: true
       rotate_to_heading_angular_vel: 1.2
-      rotate_to_heading_min_angle: 6.28
-      # Forward-only navigation; recovery uses BackUp behavior + unstick mechanism.
+      rotate_to_heading_min_angle: 0.785
       allow_reversing: false
-      # Collision detection: be strict to prevent getting stuck near walls.
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 0.5
-      # Cost-regulated velocity scaling (slow near obstacles)
       use_cost_regulated_linear_velocity_scaling: true
       cost_scaling_dist: 0.8
       cost_scaling_gain: 2.0
@@ -80,8 +74,6 @@ bt_navigator:
     odom_topic: /odom
     bt_loop_duration: 100
     default_server_timeout: 20
-    # Custom BT for Ackermann: replanning + recovery without Spin (can't rotate in place).
-    # BT XML path is set in nav2.launch.py via default_nav_to_pose_bt_xml parameter.
 
 behavior_server:
   ros__parameters:
@@ -90,9 +82,6 @@ behavior_server:
     robot_base_frame: base_link
     costmap_topic: local_costmap/costmap_raw
     footprint_topic: local_costmap/published_footprint
-    # Ackermann can't truly spin, but "spin" must be registered so the
-    # default navigate_through_poses BT can load. It will fail at runtime
-    # and the BT will move to the next recovery action (wait/backup).
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
       plugin: "nav2_behaviors/Spin"
@@ -115,14 +104,12 @@ global_costmap:
       use_sim_time: true
       global_frame: map
       robot_base_frame: base_link
-      # Robot footprint (approx 0.45m x 0.35m Ackermann body).
-      robot_radius: 0.22
+      # GO2-W footprint: ~0.50m x 0.30m, inscribed radius ~0.25m.
+      robot_radius: 0.25
       update_frequency: 2.0
       publish_frequency: 1.0
       resolution: 0.05
       track_unknown_space: true
-      # Use rolling window to avoid SLAM map initialization issues.
-      # The 20x20m window covers the entire 3-room arena.
       rolling_window: true
       width: 20
       height: 20
@@ -141,10 +128,7 @@ global_costmap:
           data_type: "LaserScan"
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Must be >= inscribed_radius (0.225) to avoid collision paths.
-        # Lethal zone extends 0.225m from walls; cost decays to 0 at 0.25m.
-        # Doorway 1.5m: non-lethal width = 1.5 - 2*0.225 = 1.05m (safe).
-        inflation_radius: 0.25
+        inflation_radius: 0.30
         cost_scaling_factor: 3.0
 
 local_costmap:
@@ -153,7 +137,7 @@ local_costmap:
       use_sim_time: true
       global_frame: odom
       robot_base_frame: base_link
-      robot_radius: 0.22
+      robot_radius: 0.25
       update_frequency: 2.0
       publish_frequency: 1.0
       rolling_window: true
@@ -172,7 +156,7 @@ local_costmap:
           data_type: "LaserScan"
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.25
+        inflation_radius: 0.30
         cost_scaling_factor: 3.0
 
 lifecycle_manager:

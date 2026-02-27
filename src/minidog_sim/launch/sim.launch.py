@@ -12,19 +12,21 @@ def generate_launch_description():
     world_name = LaunchConfiguration("world_name")
     quiet_terminal = LaunchConfiguration("quiet_terminal")
     headless = LaunchConfiguration("headless")
+    robot_type = LaunchConfiguration("robot_type")
 
-    robot_sdf_path = PathJoinSubstitution(
-        [FindPackageShare("minidog_sim"), "models", "minidog", "model.sdf"]
-    )
+    pkg_share = FindPackageShare("minidog_sim")
+
+    # Select model based on robot_type
+    diffbot_sdf_path = PathJoinSubstitution([pkg_share, "models", "diffbot", "model.sdf"])
+    minidog_sdf_path = PathJoinSubstitution([pkg_share, "models", "minidog", "model.sdf"])
 
     # ----------------------------------------------------------------
     # Gazebo variants
     # ----------------------------------------------------------------
-    # Headless (server-only, no GUI) — saves ~60% CPU on WSL2.
     gz_headless = ExecuteProcess(
         cmd=[
             "/usr/bin/ign", "gazebo",
-            "-s",  # server-only
+            "-s",
             "-r", "-v", "0",
             world,
             "--force-version", "6",
@@ -33,8 +35,6 @@ def generate_launch_description():
         condition=IfCondition(headless),
     )
 
-    # GUI mode (non-headless) — verbose or quiet
-    _not_headless = PythonExpression(["'", headless, "' != 'true'"])
     _not_headless_quiet = PythonExpression([
         "'", headless, "' != 'true' and '", quiet_terminal, "' == 'true'"
     ])
@@ -66,49 +66,53 @@ def generate_launch_description():
     )
 
     # ----------------------------------------------------------------
-    # Spawn robot
+    # Spawn robot — select model & name based on robot_type
     # ----------------------------------------------------------------
-    spawn_args = [
-        "-world", world_name,
-        "-file", robot_sdf_path,
-        "-name", "minidog",
-        "-allow_renaming", "true",
-        "-x", "0.0", "-y", "0.0", "-z", "0.15",
-    ]
+    _is_diffbot = PythonExpression(["'", robot_type, "' == 'diffbot'"])
+    _is_ackermann = PythonExpression(["'", robot_type, "' != 'diffbot'"])
 
-    spawn_screen = Node(
-        package="ros_gz_sim",
-        executable="create",
-        output="screen",
-        arguments=spawn_args,
-        parameters=[{"use_sim_time": use_sim_time}],
-        condition=UnlessCondition(quiet_terminal),
-    )
-    spawn_log = Node(
+    spawn_diffbot = Node(
         package="ros_gz_sim",
         executable="create",
         output="log",
-        arguments=spawn_args,
+        arguments=[
+            "-world", world_name,
+            "-file", diffbot_sdf_path,
+            "-name", "diffbot",
+            "-allow_renaming", "true",
+            "-x", "0.0", "-y", "0.0", "-z", "0.15",
+        ],
         parameters=[{"use_sim_time": use_sim_time}],
-        condition=IfCondition(quiet_terminal),
+        condition=IfCondition(_is_diffbot),
     )
 
-    # Give Gazebo a moment to initialize the world before spawning.
-    spawn_after_gz = TimerAction(period=3.0, actions=[spawn_screen, spawn_log])
+    spawn_ackermann = Node(
+        package="ros_gz_sim",
+        executable="create",
+        output="log",
+        arguments=[
+            "-world", world_name,
+            "-file", minidog_sdf_path,
+            "-name", "minidog",
+            "-allow_renaming", "true",
+            "-x", "0.0", "-y", "0.0", "-z", "0.15",
+        ],
+        parameters=[{"use_sim_time": use_sim_time}],
+        condition=IfCondition(_is_ackermann),
+    )
+
+    spawn_after_gz = TimerAction(period=3.0, actions=[spawn_diffbot, spawn_ackermann])
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("quiet_terminal", default_value="false"),
             DeclareLaunchArgument("headless", default_value="false"),
+            DeclareLaunchArgument("robot_type", default_value="diffbot"),
             DeclareLaunchArgument(
                 "world",
                 default_value=PathJoinSubstitution(
-                    [
-                        FindPackageShare("minidog_sim"),
-                        "worlds",
-                        "minidog_world.sdf",
-                    ]
+                    [pkg_share, "worlds", "minidog_world.sdf"]
                 ),
             ),
             DeclareLaunchArgument("world_name", default_value="minidog_world"),

@@ -1,6 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, TimerAction
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node, PushRosNamespace
 from launch_ros.substitutions import FindPackageShare
 
@@ -10,13 +10,23 @@ def generate_launch_description():
     namespace = LaunchConfiguration("namespace")
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     log_level = LaunchConfiguration("log_level")
+    robot_type = LaunchConfiguration("robot_type")
 
-    default_params = PathJoinSubstitution(
-        [FindPackageShare("minidog_sim"), "config", "nav2_slam.yaml"]
-    )
-    bt_xml = PathJoinSubstitution(
-        [FindPackageShare("minidog_sim"), "config", "nav2_bt_ackermann.xml"]
-    )
+    pkg_share = FindPackageShare("minidog_sim")
+
+    # Select params and BT based on robot_type
+    default_params = PathJoinSubstitution([
+        pkg_share, "config",
+        PythonExpression([
+            "'nav2_diffbot.yaml' if '", robot_type, "' == 'diffbot' else 'nav2_slam.yaml'"
+        ]),
+    ])
+    bt_xml = PathJoinSubstitution([
+        pkg_share, "config",
+        PythonExpression([
+            "'nav2_bt_diffbot.xml' if '", robot_type, "' == 'diffbot' else 'nav2_bt_ackermann.xml'"
+        ]),
+    ])
 
     # Nav2 server nodes (start first)
     server_nodes = [
@@ -93,6 +103,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("namespace", default_value=""),
+            DeclareLaunchArgument("robot_type", default_value="diffbot"),
             DeclareLaunchArgument("nav2_params_file", default_value=default_params),
             DeclareLaunchArgument("log_level", default_value="warn"),
             GroupAction(

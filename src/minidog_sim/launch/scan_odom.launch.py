@@ -35,8 +35,8 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
-            DeclareLaunchArgument("odom_frame", default_value="minidog/odom"),
-            DeclareLaunchArgument("base_frame", default_value="minidog/base_footprint"),
+            DeclareLaunchArgument("odom_frame", default_value="odom"),
+            DeclareLaunchArgument("base_frame", default_value="base_footprint"),
             DeclareLaunchArgument("scan_topic", default_value="/scan"),
             DeclareLaunchArgument("odom_topic", default_value="/odom"),
             DeclareLaunchArgument("mode", default_value="wheel"),
