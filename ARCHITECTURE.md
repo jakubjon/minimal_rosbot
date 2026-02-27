@@ -4,7 +4,8 @@
 
 - **Sandbox for autonomous exploration**: full SLAM + Nav2 + frontier exploration in simulation, reusable patterns for real hardware.
 - **Autonomy-first**: the system starts exploring immediately; manual override available via web UI or topic.
-- **Ackermann-aware**: the robot cannot rotate in place; all navigation, recovery behaviors, and the custom behavior tree account for this constraint.
+- **Two robot models**: differential drive (`diffbot`, default — matches real GO2-W) and Ackermann (`minidog`, legacy). Diffbot supports spin recovery; Ackermann uses forward-only navigation.
+- **Two data sources**: Gazebo simulation (`data_source:=sim`) or real robot rosbag replay (`data_source:=bag`).
 
 ### System overview
 
@@ -14,18 +15,19 @@ Gazebo Fortress (headless)
   v
 ros_gz_bridge  -->  /scan, /clock, /joint_states, /cmd_vel, /wheel_odom
   |
-  +-- robot_state_publisher (URDF TF)
-  +-- static_transform_publisher (base_footprint -> ouster)
-  +-- minidog_scan_odom (wheel odom: odom->base_footprint TF)
+  +-- robot_state_publisher (URDF TF: base_footprint -> base_link -> wheels, lidar)
+  +-- static_transform_publisher (base_footprint -> ouster sensor frame)
+  +-- RF2O pipeline: scan_filter -> rf2o -> odom_stabilizer (odom->base_footprint TF, 20Hz)
+  |   (or scan_odom in wheel/scan mode)
   |
   +-- slam_toolbox (map->odom TF, /map)
   |
   +-- Nav2 (controller, planner, bt_navigator, behavior_server, lifecycle_manager)
   |     |-- reads /map, /scan, TF
   |     |-- publishes /cmd_vel_nav
-  |     |-- uses custom Ackermann BT (no Spin recovery)
+  |     |-- diffbot: BT with Spin recovery; ackermann: BT without Spin
   |
-  +-- minidog_frontier_explorer
+  +-- frontier_explorer
   |     |-- reads /map, TF (position + heading)
   |     |-- heading-aware goal scoring (forward-biased)
   |     |-- sends NavigateToPose goals (oriented toward goal)
@@ -63,8 +65,14 @@ Both `cmd_vel_mux` and `frontier_explorer` start with `start_enabled: true` for 
 ### Odometry
 
 Three modes via `odom_source` launch argument:
-- **`wheel`** (default in `run.sh`): `minidog_scan_odom` node reads Gazebo's wheel odometry from the bridge and publishes `minidog/odom -> minidog/base_footprint` TF. Most reliable in simulation.
-- **`scan`**: `rf2o_laser_odometry` computes odom from lidar scan matching. Can drift.
+
+- **`rf2o`** (default): Laser-based odometry — best for both simulation and real hardware.
+  Pipeline: `/scan` → `scan_safety_filter` → `/scan_safe` → `rf2o_laser_odometry` → `/odom_rf2o` → `odom_stabilizer` → `/odom` (20Hz) + TF `odom → base_footprint`.
+  - `scan_safety_filter` drops scans with zero time increment to prevent RF2O div-by-zero (lesson #13)
+  - `rf2o_laser_odometry` runs at 20Hz with `publish_tf: false` (TF delegated to stabilizer)
+  - `odom_stabilizer` republishes at a fixed 20Hz timer rate, smoothing jitter. Forces z=0 in TF. Detects staleness (>0.5s) and stops publishing to let TF age naturally, preventing stale transforms from masking failures (lesson #12, #14)
+- **`wheel`**: `minidog_scan_odom` node reads Gazebo's wheel odometry from the bridge and publishes `odom → base_footprint` TF. Publishes at Gazebo's physics rate (~50-80Hz) which can cause position jitter in RViz. Wheel odom is always available on `/wheel_odom` for debugging regardless of mode.
+- **`scan`**: Identity `odom → base_footprint` TF; SLAM provides all localization. Experimental.
 - **`scan_matcher`**: external laser_scan_matcher node. Experimental.
 
 ### SLAM

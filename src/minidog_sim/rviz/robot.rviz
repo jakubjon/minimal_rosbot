@@ -30,8 +30,9 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /map
-      Alpha: 0.7
+      Alpha: 0.5
       Color Scheme: map
+      Draw Behind: true
     - Class: rviz_default_plugins/LaserScan
       Enabled: true
       Name: LaserScan
@@ -108,8 +109,9 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /global_costmap/costmap_raw
-      Alpha: 0.4
+      Alpha: 0.3
       Color Scheme: costmap
+      Draw Behind: true
     - Class: rviz_default_plugins/Map
       Enabled: true
       Name: LocalCostmap
@@ -119,8 +121,9 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /local_costmap/costmap_raw
-      Alpha: 0.4
+      Alpha: 0.3
       Color Scheme: costmap
+      Draw Behind: true
     - Class: rviz_default_plugins/Polygon
       Enabled: true
       Name: Footprint
@@ -151,11 +154,10 @@ Visualization Manager:
   Value: true
 Views:
   Current:
-    Class: rviz_default_plugins/Orbit
-    Distance: 2
-    Focal Point: 0; 0; 0
-    Pitch: 0.785
-    Yaw: 0.785
+    Class: rviz_default_plugins/TopDownOrtho
+    Scale: 40
+    X: 0
+    Y: 0
 Window Geometry:
   Height: 900
   Width: 1400
