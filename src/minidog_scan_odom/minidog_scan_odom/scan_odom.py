@@ -7,13 +7,13 @@ Supports two modes (set via ``mode`` parameter):
     Subscribes to a wheel-odometry topic (``/wheel_odom``) published by the
     Gazebo bridge and re-publishes it as:
     * ``/odom`` (``nav_msgs/Odometry``)
-    * TF: ``minidog/odom`` -> ``minidog/base_footprint``
+    * TF: ``odom`` -> ``base_link``
 
     This bypasses the ``ros_gz_bridge`` TF bridging (``Pose_V``), which
     produces a corrupt/flat TF tree that causes SLAM and Nav2 failures.
 
 **scan**
-    Publishes a static identity ``odom -> base_footprint`` TF and a
+    Publishes a static identity ``odom -> base_link`` TF and a
     zero-velocity ``/odom`` message.  SLAM (``slam_toolbox``) provides
     all localization via its ``map -> odom`` TF.
 """
@@ -34,7 +34,7 @@ class ScanOdom(Node):
         # Parameters
         self.declare_parameter("mode", "wheel")  # "wheel" or "scan"
         self.declare_parameter("odom_frame_id", "odom")
-        self.declare_parameter("base_frame_id", "base_footprint")
+        self.declare_parameter("base_frame_id", "base_link")
         self.declare_parameter("laser_scan_topic", "/scan")
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("wheel_odom_topic", "/wheel_odom")

@@ -1,8 +1,8 @@
 <sdf version='1.9'>
   <model name='diffbot'>
 
-    <!-- Base footprint: chassis + lidar lumped (fixed joints collapsed) -->
-    <link name='base_footprint'>
+    <!-- Base link: chassis + lidar lumped (fixed joints collapsed) -->
+    <link name='base_link'>
       <inertial>
         <pose>0.005 0 0.10375 0 0 0</pose>
         <mass>5.3</mass>
@@ -131,8 +131,8 @@
 
     <!-- Left wheel -->
     <joint name='left_wheel_joint' type='revolute'>
-      <pose relative_to='base_footprint'>0.05 0.15 0.05 0 0 0</pose>
-      <parent>base_footprint</parent>
+      <pose relative_to='base_link'>0.05 0.15 0.05 0 0 0</pose>
+      <parent>base_link</parent>
       <child>left_wheel_link</child>
       <axis>
         <xyz>0 1 0</xyz>
@@ -189,8 +189,8 @@
 
     <!-- Right wheel -->
     <joint name='right_wheel_joint' type='revolute'>
-      <pose relative_to='base_footprint'>0.05 -0.15 0.05 0 0 0</pose>
-      <parent>base_footprint</parent>
+      <pose relative_to='base_link'>0.05 -0.15 0.05 0 0 0</pose>
+      <parent>base_link</parent>
       <child>right_wheel_link</child>
       <axis>
         <xyz>0 1 0</xyz>
@@ -264,7 +264,7 @@
     <plugin name='ignition::gazebo::systems::OdometryPublisher' filename='ignition-gazebo-odometry-publisher-system'>
       <dimensions>3</dimensions>
       <odom_frame>odom</odom_frame>
-      <robot_base_frame>base_footprint</robot_base_frame>
+      <robot_base_frame>base_link</robot_base_frame>
       <odom_publish_frequency>50</odom_publish_frequency>
     </plugin>
 
@@ -277,10 +277,6 @@
       <pose>-0.225 0 -0.025 0 0 0</pose>
     </frame>
     <frame name='caster_link' attached_to='caster_joint'/>
-    <frame name='base_footprint_joint' attached_to='base_footprint'>
-      <pose>0 0 0.10 0 0 0</pose>
-    </frame>
-    <frame name='base_link' attached_to='base_footprint_joint'/>
 
   </model>
 </sdf>

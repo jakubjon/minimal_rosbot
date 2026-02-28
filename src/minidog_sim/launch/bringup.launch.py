@@ -87,7 +87,7 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": use_sim_time,
             "odom_frame": "odom",
-            "base_frame": "base_footprint",
+            "base_frame": "base_link",
             "scan_topic": "/scan",
             "odom_topic": "/odom",
             "mode": odom_source,
@@ -127,7 +127,7 @@ def generate_launch_description():
                 "laser_scan_topic": "/scan_safe",
                 "odom_topic": "/odom_rf2o",
                 "publish_tf": False,
-                "base_frame_id": "base_footprint",
+                "base_frame_id": "base_link",
                 "odom_frame_id": "odom",
                 "init_pose_from_topic": "",
                 "freq": 20.0,
@@ -145,7 +145,7 @@ def generate_launch_description():
         parameters=[
             {
                 "odom_frame": "odom",
-                "base_frame": "base_footprint",
+                "base_frame": "base_link",
                 "publish_tf": True,
                 "freq": 20.0,
                 "use_sim_time": use_sim_time,

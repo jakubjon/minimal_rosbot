@@ -12,7 +12,7 @@ class OdomStabilizer(Node):
 
         # Parameters
         self.odom_frame = self.declare_parameter('odom_frame', 'odom').value
-        self.base_frame = self.declare_parameter('base_frame', 'base_footprint').value
+        self.base_frame = self.declare_parameter('base_frame', 'base_link').value
         self.publish_tf = self.declare_parameter('publish_tf', True).value
         self.freq = self.declare_parameter('freq', 20.0).value
         self.max_stale_sec = self.declare_parameter('max_stale_sec', 0.5).value

@@ -12,7 +12,7 @@ Manual override is available even during autonomy: non-zero `/cmd_vel_manual` te
 
 Autonomous exploration requires:
 - `slam_toolbox` (publishes `/map` and `map→odom`)
-- An odom source (recommended: `wheel` for simulation, publishes `odom→base_footprint`)
+- An odom source (default: `rf2o` laser odometry, publishes `odom→base_link`)
 - Nav2 (planning/control producing `/cmd_vel_nav`)
 - `minidog_frontier_explorer` (sending goals)
 

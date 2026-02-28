@@ -21,7 +21,6 @@ def generate_launch_description():
     minidog_xacro = PathJoinSubstitution([pkg_share, "urdf", "robot.urdf.xacro"])
 
     rviz_config_path = PathJoinSubstitution([pkg_share, "rviz", "robot.rviz"])
-    rviz_bag_config_path = PathJoinSubstitution([pkg_share, "rviz", "robot_bag.rviz"])
 
     # Conditions
     _is_diffbot_sim = PythonExpression(["'", data_source, "' == 'sim' and '", robot_type, "' == 'diffbot'"])
@@ -59,8 +58,8 @@ def generate_launch_description():
         condition=IfCondition(_is_acker_sim),
     )
 
-    # Gazebo publishes scans with frame_id "{model_name}/base_footprint/ouster".
-    # Provide static TF from RSP's base_footprint to Gazebo's scan frame.
+    # Gazebo publishes scans with frame_id "{model_name}/base_link/ouster".
+    # Provide static TF from RSP's base_link to Gazebo's scan frame.
     ouster_tf_diffbot = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -69,8 +68,8 @@ def generate_launch_description():
         arguments=[
             "--x", "0.15", "--y", "0.0", "--z", "0.20",
             "--roll", "0.0", "--pitch", "0.0", "--yaw", "0.0",
-            "--frame-id", "base_footprint",
-            "--child-frame-id", "diffbot/base_footprint/ouster",
+            "--frame-id", "base_link",
+            "--child-frame-id", "diffbot/base_link/ouster",
         ],
         parameters=[{"use_sim_time": use_sim_time}],
         condition=IfCondition(_is_diffbot_sim),
@@ -84,34 +83,21 @@ def generate_launch_description():
         arguments=[
             "--x", "0.1", "--y", "0.0", "--z", "0.16",
             "--roll", "0.0", "--pitch", "0.0", "--yaw", "0.0",
-            "--frame-id", "base_footprint",
-            "--child-frame-id", "minidog/base_footprint/ouster",
+            "--frame-id", "base_link",
+            "--child-frame-id", "minidog/base_link/ouster",
         ],
         parameters=[{"use_sim_time": use_sim_time}],
         condition=IfCondition(_is_acker_sim),
     )
 
-    # RViz GUI — select config based on data_source
-    rviz_sim = Node(
+    # RViz GUI — single config for both sim and bag modes
+    rviz = Node(
         package="rviz2",
         executable="rviz2",
         output="log",
         arguments=["-d", rviz_config_path],
         parameters=[{"use_sim_time": use_sim_time}],
-        condition=IfCondition(PythonExpression([
-            "'", enable_rviz_gui, "' == 'true' and '", data_source, "' == 'sim'"
-        ])),
-    )
-
-    rviz_bag = Node(
-        package="rviz2",
-        executable="rviz2",
-        output="log",
-        arguments=["-d", rviz_bag_config_path],
-        parameters=[{"use_sim_time": use_sim_time}],
-        condition=IfCondition(PythonExpression([
-            "'", enable_rviz_gui, "' == 'true' and '", data_source, "' == 'bag'"
-        ])),
+        condition=IfCondition(enable_rviz_gui),
     )
 
     return LaunchDescription(
@@ -126,8 +112,7 @@ def generate_launch_description():
             rsp_ackermann,
             ouster_tf_diffbot,
             ouster_tf_ackermann,
-            # RViz (conditional on data_source)
-            rviz_sim,
-            rviz_bag,
+            # RViz
+            rviz,
         ]
     )
