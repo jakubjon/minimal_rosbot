@@ -57,6 +57,7 @@ class DataRelay(Node):
         self.tf_static_pub = self.create_publisher(TFMessage, "/tf_static", static_qos)
         self.scan_pub = self.create_publisher(LaserScan, "/scan", sensor_qos)
         self.odom_pub = self.create_publisher(Odometry, "/odom", sensor_reliable_qos)
+        self.points_pub = self.create_publisher(PointCloud2, "/points", sensor_reliable_qos)
 
         # Subscribers — namespaced GO2 topics
         self.create_subscription(
@@ -74,12 +75,16 @@ class DataRelay(Node):
         self.create_subscription(
             Odometry, f"/{namespace}/base/odom", self.odom_callback, sensor_reliable_qos
         )
+        self.create_subscription(
+            PointCloud2, f"/{namespace}/ouster/points", self.points_callback, sensor_reliable_qos
+        )
 
         # Counters for first-message logging
         self.tf_count = 0
         self.tf_static_count = 0
         self.scan_count = 0
         self.odom_count = 0
+        self.points_count = 0
 
         self.get_logger().info(f"Data relay started for namespace: {namespace}")
         self.get_logger().info("Corrections: 90° odom rotation, 180° scan rotation, odom->base_link TF")
@@ -172,6 +177,19 @@ class DataRelay(Node):
             self.get_logger().info(
                 f"First odom - {msg.header.frame_id} -> {msg.child_frame_id}, "
                 f"position rotation applied"
+            )
+
+
+    def points_callback(self, msg):
+        """Relay PointCloud2 with updated timestamp."""
+        new_msg = copy.deepcopy(msg)
+        new_msg.header.stamp = self.get_clock().now().to_msg()
+        self.points_pub.publish(new_msg)
+        self.points_count += 1
+        if self.points_count == 1:
+            self.get_logger().info(
+                f"First PointCloud2 - frame: {msg.header.frame_id}, "
+                f"width={msg.width}, height={msg.height}"
             )
 
 

@@ -12,139 +12,213 @@ Panels:
 Visualization Manager:
   Class: ""
   Displays:
-    - Alpha: 0.5
+    - Alpha: 0.2
       Cell Size: 1
       Class: rviz_default_plugins/Grid
-      Color: 160; 160; 160
+      Color: 160; 160; 164
       Enabled: true
       Name: Grid
       Plane: XY
-      Plane Cell Count: 20
+      Plane Cell Count: 100
       Reference Frame: <Fixed Frame>
-    - Class: rviz_default_plugins/Map
+    # ── Robot ──────────────────────────────────────────────
+    - Class: rviz_common/Group
+      Displays:
+        - Class: rviz_default_plugins/Axes
+          Enabled: true
+          Length: 20
+          Name: Axes
+          Radius: 0.01
+          Reference Frame: <Fixed Frame>
+        - Class: rviz_default_plugins/TF
+          Enabled: true
+          Frame Timeout: 15
+          Marker Scale: 0.5
+          Name: TF
+          Show Arrows: true
+          Show Axes: true
+          Show Names: true
+        - Class: rviz_default_plugins/Odometry
+          Enabled: true
+          Name: Odometry
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /odom
+          Keep: 100
+          Shape:
+            Alpha: 0.5
+            Color: 0; 255; 0
+            Head Length: 0.05
+            Head Radius: 0.03
+            Shaft Length: 0.10
+            Shaft Radius: 0.015
+            Value: Arrow
+          Angle Tolerance: 0.1
+          Position Tolerance: 0.1
       Enabled: true
-      Name: Map
-      Topic:
-        Depth: 5
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /map
-      Alpha: 0.7
-      Color Scheme: map
-    - Class: rviz_default_plugins/LaserScan
+      Name: Robot
+    # ── Sensors ────────────────────────────────────────────
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 1
+          Class: rviz_default_plugins/LaserScan
+          Color: 255; 255; 255
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Name: LaserScan
+          Size (m): 0.02
+          Style: Boxes
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /scan
+          Use Fixed Frame: true
+        - Alpha: 0.8
+          Autocompute Intensity Bounds: true
+          Channel Name: intensity
+          Class: rviz_default_plugins/PointCloud2
+          Color: 255; 255; 255
+          Color Transformer: Intensity
+          Decay Time: 3
+          Enabled: true
+          Invert Rainbow: false
+          Name: PointCloud
+          Size (m): 0.01
+          Style: Boxes
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /points
+          Use Fixed Frame: true
+          Use rainbow: true
       Enabled: true
-      Name: LaserScan
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /scan
-      Size (Pixels): 3
-      Style: Points
-    - Class: rviz_default_plugins/TF
+      Name: Sensors
+    # ── Navigation ─────────────────────────────────────────
+    - Class: rviz_common/Group
+      Displays:
+        - Alpha: 0.7
+          Class: rviz_default_plugins/Map
+          Color Scheme: map
+          Draw Behind: true
+          Enabled: true
+          Name: Map
+          Topic:
+            Depth: 5
+            Durability Policy: Transient Local
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /map
+        - Alpha: 0.7
+          Class: rviz_default_plugins/Map
+          Color Scheme: costmap
+          Draw Behind: false
+          Enabled: true
+          Name: LocalCostmap
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /local_costmap/costmap
+        - Alpha: 0.2
+          Class: rviz_default_plugins/Map
+          Color Scheme: costmap
+          Draw Behind: false
+          Enabled: true
+          Name: GlobalCostmap
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /global_costmap/costmap
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 206; 92; 0
+          Enabled: true
+          Head Diameter: 0.3
+          Head Length: 0.2
+          Line Style: Billboards
+          Line Width: 0.03
+          Name: GlobalPlan
+          Shaft Diameter: 0.1
+          Shaft Length: 0.1
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /plan
+        - Alpha: 1
+          Buffer Length: 5
+          Class: rviz_default_plugins/Path
+          Color: 138; 226; 52
+          Enabled: true
+          Head Diameter: 0.15
+          Head Length: 0.1
+          Line Style: Billboards
+          Line Width: 0.02
+          Name: LocalPlan
+          Offset:
+            X: 0
+            Y: 0
+            Z: 1
+          Pose Color: 78; 154; 6
+          Shaft Diameter: 0.05
+          Shaft Length: 0.5
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Best Effort
+            Value: /local_plan
+        - Alpha: 1
+          Class: rviz_default_plugins/Pose
+          Color: 115; 210; 22
+          Enabled: true
+          Head Length: 0.3
+          Head Radius: 0.1
+          Name: Nav2Goal
+          Shaft Length: 1
+          Shaft Radius: 0.05
+          Shape: Arrow
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /goal_pose
+        - Alpha: 1
+          Class: rviz_default_plugins/Polygon
+          Color: 25; 255; 0
+          Enabled: true
+          Name: LocalFootprint
+          Topic:
+            Depth: 5
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /local_costmap/published_footprint
       Enabled: true
-      Frame Timeout: 15
-      Name: TF
-      Show Arrows: true
-      Show Axes: true
-      Show Names: true
-    - Class: rviz_default_plugins/Odometry
-      Enabled: true
-      Name: Odometry
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /odom
-      Keep: 100
-      Shape: Arrow
-      Arrow Length: 0.15
-      Color: 0; 255; 0
-      Alpha: 0.5
-    - Class: rviz_default_plugins/Pose
-      Enabled: true
-      Name: Nav2Goal
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /goal_pose
-      Shape: Arrow
-      Color: 255; 255; 0
-      Alpha: 1
-    - Class: rviz_default_plugins/Path
-      Enabled: true
-      Name: GlobalPlan
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /plan
-      Color: 0; 255; 255
-      Line Style: Lines
-      Line Width: 0.03
-    - Class: rviz_default_plugins/Path
-      Enabled: true
-      Name: LocalPlan
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /local_plan
-      Color: 255; 0; 255
-      Line Style: Lines
-      Line Width: 0.03
-    - Class: rviz_default_plugins/Map
-      Enabled: true
-      Name: GlobalCostmap
-      Topic:
-        Depth: 5
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /global_costmap/costmap_raw
-      Alpha: 0.4
-      Color Scheme: costmap
-    - Class: rviz_default_plugins/Map
-      Enabled: true
-      Name: LocalCostmap
-      Topic:
-        Depth: 5
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /local_costmap/costmap_raw
-      Alpha: 0.4
-      Color Scheme: costmap
-    - Class: rviz_default_plugins/Polygon
-      Enabled: true
-      Name: Footprint
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /local_costmap/published_footprint
-      Color: 255; 165; 0
-      Alpha: 1
+      Name: Navigation
   Enabled: true
   Global Options:
-    Background Color: 48; 48; 48
+    Background Color: 61; 56; 70
     Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact
     - Class: rviz_default_plugins/MoveCamera
-    - Class: rviz_default_plugins/Select
-    - Class: rviz_default_plugins/FocusCamera
-    - Class: rviz_default_plugins/Measure
     - Class: rviz_default_plugins/SetInitialPose
       Topic: /initialpose
     - Class: rviz_default_plugins/SetGoal
