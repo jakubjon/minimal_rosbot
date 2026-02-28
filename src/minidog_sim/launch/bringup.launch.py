@@ -1,3 +1,4 @@
+import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -340,7 +341,7 @@ def generate_launch_description():
             DeclareLaunchArgument("robot_type", default_value="diffbot",
                                  description="Robot type: 'diffbot' (differential drive) or 'ackermann'"),
             DeclareLaunchArgument("bag_path",
-                                 default_value="/mnt/c/Users/Jakub/Desktop/20260115_3",
+                                 default_value=os.path.expanduser("~/Desktop/20260115_3"),
                                  description="Path to rosbag directory"),
             DeclareLaunchArgument("bag_namespace", default_value="go2_unit_27778",
                                  description="GO2 robot namespace in rosbag"),

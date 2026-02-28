@@ -13,7 +13,7 @@ The real robot is a **Unitree GO2-W** (namespace `go2_unit_27778`) that behaves 
 
 ## Rosbag
 
-Located at `/mnt/c/Users/Jakub/Desktop/20260115_3` (WSL path — adjust for Linux).
+Located at `~/Desktop/20260115_3`.
 Contents:
 - `/go2_unit_27778/base/odom` — 931 msgs (~10Hz, RF2O laser odom already computed)
 - `/go2_unit_27778/ouster/scan` — 628 msgs (~6.6Hz, LaserScan)
@@ -91,7 +91,7 @@ Key details:
 1. **Gazebo startup on WSL2**: Takes 30-45s. RF2O will spam "Waiting for laser_scans" until Gazebo produces data. This is normal.
 2. **Stale DDS entries**: After killing processes, `ros2 topic info` may show ghost publishers. Clean with `rm -f /dev/shm/fastrtps_* /dev/shm/sem.fastrtps_*` and wait a few seconds.
 3. **SLAM queue full**: On bag replay startup, slam_toolbox drops messages ("discarding message because the queue is full"). Normal — it catches up after a few seconds.
-4. **Bag replay `Message queue starved`**: rosbag player warns about queue starvation when disk I/O is slow (especially `/mnt/c/` on WSL2). Not an issue on native Linux.
+4. **Bag replay `Message queue starved`**: rosbag player warns about queue starvation when disk I/O is slow. Not an issue on native Linux with bag on local disk.
 5. **`data_relay.py` must be executable**: symlink-install requires `chmod +x` on Python scripts. If `run_bag.sh` fails with "executable not found", run `chmod +x src/minidog_sim/minidog_sim/data_relay.py` and rebuild.
 6. **Cleanup kills launch process**: The cleanup step in bringup.launch.py `pkill -9` can sometimes kill itself. This is expected — the `OnProcessExit` handler then starts the actual nodes.
 

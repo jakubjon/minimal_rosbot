@@ -18,9 +18,7 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    # Allow 10s of controller failures before giving up — WSL2 can cause
-    # momentary stalls that shouldn't abort the goal.
-    failure_tolerance: 10.0
+    failure_tolerance: 2.0
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]

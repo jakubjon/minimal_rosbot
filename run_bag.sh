@@ -7,7 +7,7 @@ set -e
 #   bash run_bag.sh /path/to/bag             # custom bag path
 #   bash run_bag.sh /path/to/bag my_ns       # custom bag path + namespace
 
-BAG_PATH="${1:-/mnt/c/Users/Jakub/Desktop/20260115_3}"
+BAG_PATH="${1:-$HOME/Desktop/20260115_3}"
 BAG_NS="${2:-go2_unit_27778}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

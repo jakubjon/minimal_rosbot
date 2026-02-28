@@ -10,8 +10,7 @@
     <plugin filename="ignition-gazebo-physics-system" name="gz::sim::systems::Physics"/>
     <!-- Required for sensors (lidar/camera) to publish topics -->
     <plugin filename="ignition-gazebo-sensors-system" name="gz::sim::systems::Sensors">
-      <!-- WSLg: ogre2 (ogre-next) can crash; use ogre (ogre1) for stability. -->
-      <render_engine>ogre</render_engine>
+      <render_engine>ogre2</render_engine>
     </plugin>
     <plugin filename="ignition-gazebo-user-commands-system" name="gz::sim::systems::UserCommands"/>
     <plugin filename="ignition-gazebo-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>

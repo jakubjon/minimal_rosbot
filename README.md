@@ -54,7 +54,7 @@ RF2O odom is already recorded in the bag — no need to re-run it.
 | `data_source` | `sim` | `sim` (Gazebo) or `bag` (rosbag replay) |
 | `robot_type` | `diffbot` | `diffbot` (diff drive) or `ackermann` (minidog) |
 | `odom_source` | `rf2o` | `rf2o`, `wheel` (Gazebo GT), `scan`, `scan_matcher` |
-| `bag_path` | `/mnt/c/.../20260115_3` | Path to rosbag directory |
+| `bag_path` | `~/Desktop/20260115_3` | Path to rosbag directory |
 | `bag_namespace` | `go2_unit_27778` | GO2 namespace in rosbag |
 | `enable_slam` | `true` | Start slam_toolbox |
 | `enable_nav2` | `false` | Start Nav2 stack |
@@ -137,5 +137,5 @@ ros2 topic pub /cmd_vel_manual geometry_msgs/msg/Twist "{linear: {x: 0.5}, angul
 
 ## Platform notes
 
-- **Linux** (recommended): native Gazebo/RViz performance
-- **WSL2**: works but Gazebo startup is slow (~30-45s). FastDDS configured for UDP-only (no shared memory) via `config/fastdds_no_shm.xml`
+- **Linux** (native, recommended): full performance, ogre2 renderer, shared memory DDS optional
+- **WSL2**: Gazebo startup slow (~30-45s). FastDDS configured for UDP-only (no shared memory) via `config/fastdds_no_shm.xml`
