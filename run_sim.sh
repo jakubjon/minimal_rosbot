@@ -62,4 +62,5 @@ ros2 launch minidog_sim bringup.launch.py \
     enable_web:=true \
     enable_rviz:=true \
     headless:=false \
+    enable_ekf:=true \
     quiet_terminal:=false

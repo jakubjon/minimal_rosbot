@@ -42,6 +42,7 @@ def generate_launch_description():
     robot_type = LaunchConfiguration("robot_type")
     bag_path = LaunchConfiguration("bag_path")
     bag_namespace = LaunchConfiguration("bag_namespace")
+    enable_ekf = LaunchConfiguration("enable_ekf")
 
     # Conditions
     _is_sim = PythonExpression(["'", data_source, "' == 'sim'"])
@@ -53,6 +54,7 @@ def generate_launch_description():
     # In bag mode this means fresh RF2O on the corrected scan instead of
     # replaying the recorded odom (data_relay.relay_odom is set to false).
     _use_odom_rf2o = PythonExpression(["'", odom_source, "' == 'rf2o'"])
+    _use_ekf = PythonExpression(["'", enable_ekf, "' == 'true'"])
 
     # ================================================================
     # SIM-ONLY NODES: Gazebo + bridge + odom pipeline
@@ -90,6 +92,15 @@ def generate_launch_description():
             "scan_topic": "/scan",
         }.items(),
         condition=IfCondition(_is_sim_odom_scan_matcher),
+    )
+
+    imu_fixup = Node(
+        package="minidog_sim",
+        executable="imu_fixup.py",
+        name="imu_fixup",
+        output="screen",
+        parameters=[{"use_sim_time": use_sim_time}],
+        condition=IfCondition(_is_sim),
     )
 
     scan_filter = Node(
@@ -133,7 +144,7 @@ def generate_launch_description():
             {
                 "odom_frame": "odom",
                 "base_frame": "base_link",
-                "publish_tf": True,
+                "publish_tf": PythonExpression(["'false' if '", enable_ekf, "' == 'true' else 'true'"]),
                 "freq": 20.0,
                 "use_sim_time": use_sim_time,
             }
@@ -143,6 +154,19 @@ def generate_launch_description():
             ("odom", "/odom"),
         ],
         condition=IfCondition(_use_odom_rf2o),
+    )
+
+    ekf_node = Node(
+        package="robot_localization",
+        executable="ekf_node",
+        name="ekf_node",
+        output="screen",
+        parameters=[
+            PathJoinSubstitution([pkg_share, "config", "ekf.yaml"]),
+            {"use_sim_time": use_sim_time},
+        ],
+        remappings=[("odometry/filtered", "/odom/filtered")],
+        condition=IfCondition(_use_ekf),
     )
 
     # ================================================================
@@ -214,6 +238,7 @@ def generate_launch_description():
             "quiet_terminal": quiet_terminal,
             "log_level": log_level,
             "robot_type": robot_type,
+        "odom_topic": PythonExpression(["'/odom/filtered' if '", enable_ekf, "' == 'true' else '/odom'"]),
         }.items(),
         condition=IfCondition(enable_nav2),
     )
@@ -272,6 +297,8 @@ def generate_launch_description():
             "  pkill -9 -f '[s]tatic_transform_publisher' || true; "
             "  pkill -9 -f '[r]f2o_laser_odometry' || true; "
             "  pkill -9 -f '[l]aser_scan_matcher' || true; "
+            "  pkill -9 -f '[e]kf_node' || true; "
+            "  pkill -9 -f '[i]mu_fixup' || true; "
             "  pkill -9 -f '[c]md_vel_mux' || true; "
             "  pkill -9 -f '[f]rontier_explore' || true; "
             "  pkill -9 -f '[s]treamlit' || true; "
@@ -298,8 +325,8 @@ def generate_launch_description():
                 sim,
                 bridge,
                 scan_matcher_odom,
-                # Phase 2a: scan filter and rf2o after 0.5s
-                TimerAction(period=0.5, actions=[scan_filter, rf2o_odom]),
+                # Phase 2a: scan filter, rf2o, and imu_fixup after 0.5s
+                TimerAction(period=0.5, actions=[scan_filter, rf2o_odom, imu_fixup]),
                 # Phase 2b: odom stabilizer after 1.0s
                 TimerAction(period=1.0, actions=[odom_stabilizer]),
 
@@ -310,7 +337,7 @@ def generate_launch_description():
 
                 # === SHARED PHASES ===
                 # RViz + mux (sim: 1.5s, bag: 1.0s — both work with 1.5s)
-                TimerAction(period=1.5, actions=[mux, rviz]),
+                TimerAction(period=1.5, actions=[mux, rviz, ekf_node]),
                 # SLAM (sim: 5s for Gazebo startup, bag: 3s is enough)
                 TimerAction(period=5.0, actions=[slam]),
                 # Nav2 (sim: 10s, bag: 8s — 10s safe for both)
@@ -349,6 +376,8 @@ def generate_launch_description():
             DeclareLaunchArgument("web_host", default_value="0.0.0.0"),
             DeclareLaunchArgument("web_port", default_value="8501"),
             DeclareLaunchArgument("odom_source", default_value="rf2o"),
+            DeclareLaunchArgument("enable_ekf", default_value="false",
+                                  description="Fuse RF2O odom + IMU gyro via robot_localization EKF (opt-in)"),
             DeclareLaunchArgument("ros_localhost_only", default_value="0"),
             DeclareLaunchArgument("rmw_implementation", default_value=""),
             SetEnvironmentVariable("ROS_LOCALHOST_ONLY", ros_localhost_only),

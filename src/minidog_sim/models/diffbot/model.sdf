@@ -119,11 +119,36 @@
           </scan>
           <range>
             <min>0.1</min>
-            <max>20</max>
+            <max>10</max>
             <resolution>0.01</resolution>
           </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.015</stddev>
+          </noise>
         </lidar>
         <visualize>true</visualize>
+        <pose>0.15 0 0.20 0 0 0</pose>
+        <alwaysOn>1</alwaysOn>
+      </sensor>
+
+      <!-- IMU sensor — collocated with lidar, matches body IMU from go2_statepublisher -->
+      <sensor name='imu_sensor' type='imu'>
+        <topic>/diffbot/imu</topic>
+        <update_rate>100</update_rate>
+        <imu>
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0.0</mean><stddev>0.04</stddev></noise></x>
+            <y><noise type="gaussian"><mean>0.0</mean><stddev>0.04</stddev></noise></y>
+            <z><noise type="gaussian"><mean>0.0</mean><stddev>0.04</stddev></noise></z>
+          </linear_acceleration>
+        </imu>
         <pose>0.15 0 0.20 0 0 0</pose>
         <alwaysOn>1</alwaysOn>
       </sensor>

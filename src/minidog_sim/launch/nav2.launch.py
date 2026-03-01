@@ -11,6 +11,7 @@ def generate_launch_description():
     nav2_params_file = LaunchConfiguration("nav2_params_file")
     log_level = LaunchConfiguration("log_level")
     robot_type = LaunchConfiguration("robot_type")
+    odom_topic = LaunchConfiguration("odom_topic")
 
     pkg_share = FindPackageShare("minidog_sim")
 
@@ -36,7 +37,7 @@ def generate_launch_description():
             name="controller_server",
             output="log",
             parameters=[nav2_params_file, {"use_sim_time": use_sim_time}],
-            remappings=[("/cmd_vel", "/cmd_vel_nav"), ("/odom", "/odom")],
+            remappings=[("/cmd_vel", "/cmd_vel_nav")],
             arguments=["--ros-args", "--log-level", log_level],
         ),
         Node(
@@ -56,6 +57,7 @@ def generate_launch_description():
                 nav2_params_file,
                 {"use_sim_time": use_sim_time},
                 {"default_nav_to_pose_bt_xml": bt_xml},
+                {"odom_topic": odom_topic},
             ],
             # Ensure Nav2 never publishes directly to /cmd_vel (mux owns /cmd_vel).
             remappings=[("/cmd_vel", "/cmd_vel_nav")],
@@ -106,6 +108,7 @@ def generate_launch_description():
             DeclareLaunchArgument("robot_type", default_value="diffbot"),
             DeclareLaunchArgument("nav2_params_file", default_value=default_params),
             DeclareLaunchArgument("log_level", default_value="warn"),
+            DeclareLaunchArgument("odom_topic", default_value="/odom"),
             GroupAction(
                 [
                     PushRosNamespace(namespace),

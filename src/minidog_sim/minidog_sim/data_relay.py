@@ -19,7 +19,7 @@ import rclpy
 from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
 from geometry_msgs.msg import TransformStamped
-from sensor_msgs.msg import LaserScan, PointCloud2
+from sensor_msgs.msg import LaserScan, PointCloud2, Imu
 from nav_msgs.msg import Odometry
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, HistoryPolicy
 import copy
@@ -58,11 +58,18 @@ class DataRelay(Node):
             history=HistoryPolicy.KEEP_LAST,
         )
 
+        # IMU covariance diagonals (row-major 3x3, off-diagonal = 0)
+        # GO2 body IMU: high accel noise due to leg vibration, gyro is clean
+        self._orient_cov = [0.01, 0.0, 0.0,  0.0, 0.01, 0.0,  0.0, 0.0, 0.1]
+        self._gyro_cov   = [0.002, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.002]
+        self._accel_cov  = [0.04, 0.0, 0.0,  0.0, 0.04, 0.0,  0.0, 0.0, 0.04]
+
         # Publishers — standard topics for SLAM/Nav2
         self.tf_pub = self.create_publisher(TFMessage, "/tf", dynamic_qos)
         self.tf_static_pub = self.create_publisher(TFMessage, "/tf_static", static_qos)
         self.scan_pub = self.create_publisher(LaserScan, "/scan", sensor_qos)
         self.points_pub = self.create_publisher(PointCloud2, "/points", sensor_reliable_qos)
+        self.imu_pub = self.create_publisher(Imu, "/imu/data", sensor_qos)
 
         # Subscribers — namespaced GO2 topics
         self.create_subscription(
@@ -79,6 +86,9 @@ class DataRelay(Node):
         )
         self.create_subscription(
             PointCloud2, f"/{namespace}/ouster/points", self.points_callback, sensor_reliable_qos
+        )
+        self.create_subscription(
+            Imu, f"/{namespace}/sensor/imu/data", self.imu_callback, sensor_qos
         )
 
         # Odometry relay is optional — disabled when RF2O runs fresh on the corrected scan
@@ -100,6 +110,7 @@ class DataRelay(Node):
         self.scan_count = 0
         self.odom_count = 0
         self.points_count = 0
+        self.imu_count = 0
 
         self.get_logger().info(f"Data relay started for namespace: {namespace}")
         self.get_logger().info("Corrections: 90° odom rotation, 180° scan rotation, odom->base_link TF")
@@ -233,6 +244,26 @@ class DataRelay(Node):
             self.get_logger().info(
                 f"First PointCloud2 - frame: {msg.header.frame_id}, "
                 f"width={msg.width}, height={msg.height}"
+            )
+
+    def imu_callback(self, msg):
+        """Relay body IMU: fix empty frame_id and inject diagonal covariances.
+
+        go2_statepublisher leaves frame_id="" and all covariance arrays at zero.
+        EKF requires non-zero covariances to weight inputs correctly.
+        """
+        new_msg = copy.deepcopy(msg)
+        new_msg.header.stamp = self.get_clock().now().to_msg()
+        new_msg.header.frame_id = "base_link"
+        for i in range(9):
+            new_msg.orientation_covariance[i]         = self._orient_cov[i]
+            new_msg.angular_velocity_covariance[i]    = self._gyro_cov[i]
+            new_msg.linear_acceleration_covariance[i] = self._accel_cov[i]
+        self.imu_pub.publish(new_msg)
+        self.imu_count += 1
+        if self.imu_count == 1:
+            self.get_logger().info(
+                f"First IMU relayed - frame_id set to 'base_link', covariances injected"
             )
 
 

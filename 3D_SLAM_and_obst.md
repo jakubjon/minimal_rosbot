@@ -1,4 +1,6 @@
-o what reference is slam calculated? to global map?
+Notes for future imrovements.
+
+what reference is slam calculated? to global map?
 is the poincloud used for any navigation or is it just visualized
 can be poincloud used for some navigational purposes? obsicle detection? 3d global map?
 These are conceptual questions — I can answer them directly from the codebase knowledge.

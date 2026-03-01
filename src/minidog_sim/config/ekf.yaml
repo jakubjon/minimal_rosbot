@@ -1,0 +1,33 @@
+ekf_node:
+  ros__parameters:
+    frequency: 30.0
+    map_frame:       map
+    odom_frame:      odom
+    base_link_frame: base_link
+    world_frame:     odom      # EKF tracks odom→base_link (not map→base_link)
+    publish_tf:      true      # EKF owns odom→base_link TF when enabled
+    two_d_mode:      true      # Ground robot: ignore z, roll, pitch
+
+    # RF2O odometry: fuse pose (x, y, yaw) and twist (vx, vyaw)
+    # [x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az]
+    odom0: /odom
+    odom0_config: [true,  true,  false,
+                   false, false, true,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    odom0_relative:     false
+
+    # Body IMU: fuse only gyroscope yaw-rate (vyaw index [11])
+    # two_d_mode=true ignores roll/pitch inputs anyway.
+    # Linear acceleration skipped — too noisy on legged robot due to leg oscillation.
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential:                    false
+    imu0_relative:                        false
+    imu0_remove_gravitational_acceleration: true

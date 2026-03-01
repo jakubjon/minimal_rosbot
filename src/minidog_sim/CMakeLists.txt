@@ -11,6 +11,7 @@ install(PROGRAMS
   minidog_sim/scan_filter.py
   minidog_sim/odom_stabilizer.py
   minidog_sim/data_relay.py
+  minidog_sim/imu_fixup.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -13,7 +13,9 @@ class OdomStabilizer(Node):
         # Parameters
         self.odom_frame = self.declare_parameter('odom_frame', 'odom').value
         self.base_frame = self.declare_parameter('base_frame', 'base_link').value
-        self.publish_tf = self.declare_parameter('publish_tf', True).value
+        _raw_tf = self.declare_parameter('publish_tf', True).value
+        # PythonExpression in launch yields a string; handle both bool and string forms
+        self.publish_tf = _raw_tf if isinstance(_raw_tf, bool) else str(_raw_tf).lower() == 'true'
         self.freq = self.declare_parameter('freq', 20.0).value
         self.max_stale_sec = self.declare_parameter('max_stale_sec', 0.5).value
 
