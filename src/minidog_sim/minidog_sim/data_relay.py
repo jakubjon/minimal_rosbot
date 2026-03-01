@@ -5,12 +5,16 @@ Subscribes to namespaced GO2 topics and republishes on standard topics
 expected by the SLAM/Nav2/exploration pipeline.
 
 Applies corrections for known GO2 data quirks:
-1. 90-degree odometry position rotation (GO2 X=left, Y=forward)
+1. 90-degree odometry position/orientation/velocity rotation (GO2 X=left, Y=forward)
 2. 180-degree LaserScan rotation (scan/pointcloud frame mismatch)
 3. Self-referential TF filtering (os_sensor -> os_sensor)
 4. odom -> base_link TF publishing from odometry messages
+
+When relay_odom:=false (bag+RF2O mode), odometry relay is skipped entirely
+and the RF2O pipeline produces odom from the corrected scan instead.
 """
 
+import math
 import rclpy
 from rclpy.node import Node
 from tf2_msgs.msg import TFMessage
@@ -26,7 +30,9 @@ class DataRelay(Node):
         super().__init__("data_relay")
 
         self.declare_parameter("namespace", "go2_unit_27778")
+        self.declare_parameter("relay_odom", True)
         namespace = self.get_parameter("namespace").value
+        self.relay_odom = self.get_parameter("relay_odom").value
 
         # QoS profiles
         static_qos = QoSProfile(
@@ -56,7 +62,6 @@ class DataRelay(Node):
         self.tf_pub = self.create_publisher(TFMessage, "/tf", dynamic_qos)
         self.tf_static_pub = self.create_publisher(TFMessage, "/tf_static", static_qos)
         self.scan_pub = self.create_publisher(LaserScan, "/scan", sensor_qos)
-        self.odom_pub = self.create_publisher(Odometry, "/odom", sensor_reliable_qos)
         self.points_pub = self.create_publisher(PointCloud2, "/points", sensor_reliable_qos)
 
         # Subscribers — namespaced GO2 topics
@@ -73,11 +78,21 @@ class DataRelay(Node):
             LaserScan, f"/{namespace}/ouster/scan", self.scan_callback, sensor_qos
         )
         self.create_subscription(
-            Odometry, f"/{namespace}/base/odom", self.odom_callback, sensor_reliable_qos
-        )
-        self.create_subscription(
             PointCloud2, f"/{namespace}/ouster/points", self.points_callback, sensor_reliable_qos
         )
+
+        # Odometry relay is optional — disabled when RF2O runs fresh on the corrected scan
+        if self.relay_odom:
+            self.odom_pub = self.create_publisher(Odometry, "/odom", sensor_reliable_qos)
+            self.create_subscription(
+                Odometry, f"/{namespace}/base/odom", self.odom_callback, sensor_reliable_qos
+            )
+            self.get_logger().info("Odometry relay: ENABLED (replaying recorded odom)")
+        else:
+            self.odom_pub = None
+            self.get_logger().info(
+                "Odometry relay: DISABLED (RF2O will compute fresh odom from /scan)"
+            )
 
         # Counters for first-message logging
         self.tf_count = 0
@@ -141,32 +156,61 @@ class DataRelay(Node):
             self.get_logger().info(f"First scan - frame: {msg.header.frame_id}, rotated 180°")
 
     def odom_callback(self, msg):
-        """Relay odometry with 90° position rotation and publish odom->base_link TF."""
+        """Relay odometry with full -90° Z rotation and publish odom->base_link TF.
+
+        GO2 convention: X=left, Y=forward.  Standard ROS: X=forward.
+        The correction is a -90° rotation around Z, applied to position,
+        orientation quaternion, and linear velocity.
+        """
         now = self.get_clock().now().to_msg()
 
-        # GO2 odom has 90° rotation: X=left, Y=forward (non-standard)
-        # Correct: new_x = y, new_y = -x
-        orig_x = msg.pose.pose.position.x
-        orig_y = msg.pose.pose.position.y
-        corrected_x = orig_y
-        corrected_y = -orig_x
+        # Position: rotate -90° around Z  →  new_x = orig_y, new_y = -orig_x
+        corrected_x = msg.pose.pose.position.y
+        corrected_y = -msg.pose.pose.position.x
+
+        # Orientation: q_new = q_rot(-90°Z) ⊗ q_orig
+        # q_rot = (0, 0, -k, k)  where k = 1/√2
+        # Closed-form result (pre-multiplied by pure-Z rotation):
+        #   new.x = k*(q.x + q.y)
+        #   new.y = k*(q.y - q.x)
+        #   new.z = k*(q.z - q.w)
+        #   new.w = k*(q.w + q.z)
+        k = math.sqrt(0.5)
+        q = msg.pose.pose.orientation
+        rot_qx = k * (q.x + q.y)
+        rot_qy = k * (q.y - q.x)
+        rot_qz = k * (q.z - q.w)
+        rot_qw = k * (q.w + q.z)
+
+        # Linear velocity: same -90° rotation  →  new_vx = orig_vy, new_vy = -orig_vx
+        corrected_vx = msg.twist.twist.linear.y
+        corrected_vy = -msg.twist.twist.linear.x
 
         # Publish corrected odometry
         new_msg = copy.deepcopy(msg)
         new_msg.header.stamp = now
         new_msg.pose.pose.position.x = corrected_x
         new_msg.pose.pose.position.y = corrected_y
+        new_msg.pose.pose.orientation.x = rot_qx
+        new_msg.pose.pose.orientation.y = rot_qy
+        new_msg.pose.pose.orientation.z = rot_qz
+        new_msg.pose.pose.orientation.w = rot_qw
+        new_msg.twist.twist.linear.x = corrected_vx
+        new_msg.twist.twist.linear.y = corrected_vy
         self.odom_pub.publish(new_msg)
 
-        # Publish odom -> base_link TF (not in bag, must be derived)
+        # Publish odom -> base_link TF
         odom_tf = TransformStamped()
         odom_tf.header.stamp = now
-        odom_tf.header.frame_id = msg.header.frame_id       # "odom"
-        odom_tf.child_frame_id = msg.child_frame_id          # "base_link"
+        odom_tf.header.frame_id = msg.header.frame_id    # "odom"
+        odom_tf.child_frame_id = msg.child_frame_id      # "base_link"
         odom_tf.transform.translation.x = corrected_x
         odom_tf.transform.translation.y = corrected_y
         odom_tf.transform.translation.z = msg.pose.pose.position.z
-        odom_tf.transform.rotation = msg.pose.pose.orientation
+        odom_tf.transform.rotation.x = rot_qx
+        odom_tf.transform.rotation.y = rot_qy
+        odom_tf.transform.rotation.z = rot_qz
+        odom_tf.transform.rotation.w = rot_qw
 
         tf_msg = TFMessage()
         tf_msg.transforms.append(odom_tf)
@@ -176,9 +220,8 @@ class DataRelay(Node):
         if self.odom_count == 1:
             self.get_logger().info(
                 f"First odom - {msg.header.frame_id} -> {msg.child_frame_id}, "
-                f"position rotation applied"
+                f"position + orientation + velocity rotated -90° Z"
             )
-
 
     def points_callback(self, msg):
         """Relay PointCloud2 with updated timestamp."""

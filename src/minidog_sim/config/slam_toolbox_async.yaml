@@ -11,8 +11,9 @@ slam_toolbox:
     # Input scan
     scan_topic: "/scan"
     min_laser_range: 0.1    # match lidar <min>0.1</min> in SDF
-    # Process every 5th scan (10Hz lidar -> 2Hz SLAM) to reduce CPU load
-    throttle_scans: 5
+    # Process every scan — in bag mode lidar is 6.6Hz so CPU load is manageable;
+    # in sim mode 10Hz is also fine on native Linux hardware.
+    throttle_scans: 1
 
     # Tolerate small TF delays
     transform_timeout: 0.5
@@ -20,7 +21,7 @@ slam_toolbox:
     # Reasonable defaults for a small indoor world
     resolution: 0.05
     max_laser_range: 20.0
-    map_update_interval: 2.0
+    map_update_interval: 1.0
     transform_publish_period: 0.05
 
 

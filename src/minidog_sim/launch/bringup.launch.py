@@ -52,9 +52,10 @@ def generate_launch_description():
     _is_sim_odom_scan_matcher = PythonExpression([
         "'", data_source, "' == 'sim' and '", odom_source, "' == 'scan_matcher'"
     ])
-    _is_sim_odom_rf2o = PythonExpression([
-        "'", data_source, "' == 'sim' and '", odom_source, "' == 'rf2o'"
-    ])
+    # RF2O runs whenever odom_source==rf2o, regardless of data source.
+    # In bag mode this means fresh RF2O on the corrected scan instead of
+    # replaying the recorded odom (data_relay.relay_odom is set to false).
+    _use_odom_rf2o = PythonExpression(["'", odom_source, "' == 'rf2o'"])
 
     # ================================================================
     # SIM-ONLY NODES: Gazebo + bridge + odom pipeline
@@ -115,7 +116,7 @@ def generate_launch_description():
             ("scan_raw", "/scan"),
             ("scan_safe", "/scan_safe"),
         ],
-        condition=IfCondition(_is_sim_odom_rf2o),
+        condition=IfCondition(_use_odom_rf2o),
     )
 
     rf2o_odom = Node(
@@ -135,7 +136,7 @@ def generate_launch_description():
                 "use_sim_time": use_sim_time,
             }
         ],
-        condition=IfCondition(_is_sim_odom_rf2o),
+        condition=IfCondition(_use_odom_rf2o),
     )
 
     odom_stabilizer = Node(
@@ -156,7 +157,7 @@ def generate_launch_description():
             ("odom_rf2o", "/odom_rf2o"),
             ("odom", "/odom"),
         ],
-        condition=IfCondition(_is_sim_odom_rf2o),
+        condition=IfCondition(_use_odom_rf2o),
     )
 
     # ================================================================
@@ -180,6 +181,10 @@ def generate_launch_description():
         parameters=[{
             "use_sim_time": True,
             "namespace": bag_namespace,
+            # Disable recorded-odom relay when running RF2O fresh on the corrected scan
+            "relay_odom": PythonExpression(
+                ["'false' if '", odom_source, "' == 'rf2o' else 'true'"]
+            ),
         }],
         condition=IfCondition(_is_bag),
     )
@@ -297,8 +302,9 @@ def generate_launch_description():
 
     # ----------------------------------------------------------------
     # Staggered launch after cleanup
-    # SIM:  Gazebo(0s) -> odom(0.5s) -> rviz+mux(1.5s) -> SLAM(5s) -> Nav2(10s) -> explore(20s)
-    # BAG:  bag+relay(0s) -> rviz(1s) -> SLAM(3s) -> Nav2(8s) -> explore(15s)
+    # SIM (rf2o):  Gazebo(0s) -> scan_filter+rf2o(0.5s) -> stabilizer(1.0s) -> rviz+mux(1.5s) -> SLAM(5s) -> Nav2(10s) -> explore(20s)
+    # BAG (rf2o):  bag+relay(0s) -> scan_filter+rf2o(0.5s) -> stabilizer(1.0s) -> rviz+mux(1.5s) -> SLAM(5s) -> Nav2(10s) -> explore(20s)
+    # BAG (wheel): bag+relay(0s) -> rviz+mux(1.5s) -> SLAM(5s) -> Nav2(10s) -> explore(20s)
     # ----------------------------------------------------------------
     start_after_cleanup = RegisterEventHandler(
         OnProcessExit(

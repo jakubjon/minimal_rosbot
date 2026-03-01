@@ -33,13 +33,13 @@ map → odom → base_link → lidar_link (sim) / os_sensor (bag)
 - All launch files, nodes, and configs use `base_link` consistently
 - The minidog/ackermann model still uses `base_footprint` (legacy, not unified yet)
 
-## RF2O Odometry Pipeline (sim mode)
+## RF2O Odometry Pipeline (sim and bag modes, odom_source:=rf2o)
 
 ```
-/scan (10Hz from Gazebo)
+/scan (10Hz sim / 6.6Hz bag)
   → scan_safety_filter (drops zero time_increment scans)
     → /scan_safe
-      → rf2o_laser_odometry (20Hz, publish_tf: false)
+      → rf2o_laser_odometry (publish_tf: false)
         → /odom_rf2o
           → odom_stabilizer (20Hz timer, publishes /odom + TF odom→base_link)
 ```
@@ -52,11 +52,20 @@ Key details:
 ## Data Relay (bag mode)
 
 `data_relay.py` handles GO2-W rosbag quirks:
-- **90° odom rotation**: GO2 forward = ROS Y-axis, rotated to X-forward
-- **180° scan rotation**: Ouster mounted backward, angles shifted by π
-- **Self-referencing TF filter**: drops `base_link → base_link` transforms from bag
+- **90° rotation (position + orientation + velocity)**: GO2 X=left, Y=forward → standard ROS X=forward via -90° Z rotation applied as quaternion pre-multiply `q_rot⊗q_orig`
+- **180° scan rotation**: Ouster mounted backward, ranges array shifted by half
+- **Self-referencing TF filter**: drops `os_sensor → os_sensor` (180° yaw hack) from bag
 - **PointCloud2 relay**: deep-copies with updated timestamps
-- Publishes `odom → base_link` TF directly (no RF2O needed — already in bag)
+- **`relay_odom` parameter**: when `false` (default in rf2o mode), skips odom subscription so RF2O owns the odom/TF output
+
+## RF2O in bag mode (default, odom_source:=rf2o)
+
+Instead of replaying the recorded GO2 odom, RF2O runs fresh on the corrected scan:
+```
+bag scan → data_relay (180° rotate) → /scan → scan_filter → RF2O → odom_stabilizer → /odom + TF
+```
+Benefits: consistent coordinate frame, 20Hz smooth odom, eliminates recorded-odom drift.
+To revert to recorded odom: `odom_source:=wheel` (data_relay.relay_odom stays true).
 
 ## Diffbot Physics (model.sdf)
 
