@@ -22,15 +22,12 @@ kill_zombies() {
     pkill -9 -f 'static_transform_publisher'       2>/dev/null || true
     pkill -9 -f 'rf2o_laser_odometry'              2>/dev/null || true
     pkill -9 -f 'laser_scan_matcher'               2>/dev/null || true
-    pkill -9 -f 'scan_odom_node'                   2>/dev/null || true
-    pkill -9 -f 'scan_odom'                        2>/dev/null || true
     pkill -9 -f 'cmd_vel_mux'                      2>/dev/null || true
     pkill -9 -f 'frontier_explore'                 2>/dev/null || true
     pkill -9 -f 'streamlit'                        2>/dev/null || true
     pkill -9 -f 'minidog_sim'                      2>/dev/null || true
     pkill -9 -f 'minidog_explore'                  2>/dev/null || true
     pkill -9 -f 'minidog_cmd_mux'                  2>/dev/null || true
-    pkill -9 -f 'minidog_scan_odom'                2>/dev/null || true
     pkill -9 -f 'ros2 launch'                     2>/dev/null || true
     pkill -9 -f 'rqt'                             2>/dev/null || true
 }

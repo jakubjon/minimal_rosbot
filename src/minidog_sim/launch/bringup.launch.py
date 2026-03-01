@@ -46,9 +46,6 @@ def generate_launch_description():
     # Conditions
     _is_sim = PythonExpression(["'", data_source, "' == 'sim'"])
     _is_bag = PythonExpression(["'", data_source, "' == 'bag'"])
-    _is_sim_odom_wheel_or_scan = PythonExpression([
-        "'", data_source, "' == 'sim' and '", odom_source, "' in ['wheel', 'scan']"
-    ])
     _is_sim_odom_scan_matcher = PythonExpression([
         "'", data_source, "' == 'sim' and '", odom_source, "' == 'scan_matcher'"
     ])
@@ -84,18 +81,6 @@ def generate_launch_description():
         condition=IfCondition(_is_sim),
     )
 
-    scan_odom = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(PathJoinSubstitution([pkg_share, "launch", "scan_odom.launch.py"])),
-        launch_arguments={
-            "use_sim_time": use_sim_time,
-            "odom_frame": "odom",
-            "base_frame": "base_link",
-            "scan_topic": "/scan",
-            "odom_topic": "/odom",
-            "mode": odom_source,
-        }.items(),
-        condition=IfCondition(_is_sim_odom_wheel_or_scan),
-    )
     scan_matcher_odom = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([pkg_share, "launch", "laser_scan_matcher.launch.py"])
@@ -287,7 +272,6 @@ def generate_launch_description():
             "  pkill -9 -f '[s]tatic_transform_publisher' || true; "
             "  pkill -9 -f '[r]f2o_laser_odometry' || true; "
             "  pkill -9 -f '[l]aser_scan_matcher' || true; "
-            "  pkill -9 -f '[s]can_odom' || true; "
             "  pkill -9 -f '[c]md_vel_mux' || true; "
             "  pkill -9 -f '[f]rontier_explore' || true; "
             "  pkill -9 -f '[s]treamlit' || true; "
@@ -304,17 +288,15 @@ def generate_launch_description():
     # Staggered launch after cleanup
     # SIM (rf2o):  Gazebo(0s) -> scan_filter+rf2o(0.5s) -> stabilizer(1.0s) -> rviz+mux(1.5s) -> SLAM(5s) -> Nav2(10s) -> explore(20s)
     # BAG (rf2o):  bag+relay(0s) -> scan_filter+rf2o(0.5s) -> stabilizer(1.0s) -> rviz+mux(1.5s) -> SLAM(5s) -> Nav2(10s) -> explore(20s)
-    # BAG (wheel): bag+relay(0s) -> rviz+mux(1.5s) -> SLAM(5s) -> Nav2(10s) -> explore(20s)
     # ----------------------------------------------------------------
     start_after_cleanup = RegisterEventHandler(
         OnProcessExit(
             target_action=cleanup,
             on_exit=[
                 # === SIM MODE PHASES ===
-                # Phase 1: Gazebo + bridge + wheel odom + scan matcher
+                # Phase 1: Gazebo + bridge + scan matcher
                 sim,
                 bridge,
-                scan_odom,
                 scan_matcher_odom,
                 # Phase 2a: scan filter and rf2o after 0.5s
                 TimerAction(period=0.5, actions=[scan_filter, rf2o_odom]),
