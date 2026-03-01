@@ -27,4 +27,5 @@ ros2 launch minidog_sim bringup.launch.py \
     enable_mux:=false \
     enable_web:=false \
     enable_rviz:=true \
+    enable_ekf:=true \
     quiet_terminal:=false

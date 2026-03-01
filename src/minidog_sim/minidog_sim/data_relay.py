@@ -59,10 +59,14 @@ class DataRelay(Node):
         )
 
         # IMU covariance diagonals (row-major 3x3, off-diagonal = 0)
-        # GO2 body IMU: high accel noise due to leg vibration, gyro is clean
-        self._orient_cov = [0.01, 0.0, 0.0,  0.0, 0.01, 0.0,  0.0, 0.0, 0.1]
-        self._gyro_cov   = [0.002, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.002]
-        self._accel_cov  = [0.04, 0.0, 0.0,  0.0, 0.04, 0.0,  0.0, 0.0, 0.04]
+        # Values are VARIANCES (σ²), not standard deviations.
+        # GO2 body IMU: high accel noise due to leg vibration, gyro is clean.
+        # Orient: σ=0.1 rad (5.7°) xy, σ=0.316 rad (18°) yaw → σ²=0.01 / 0.1
+        # Gyro:   σ=0.002 rad/s → σ²=4e-6
+        # Accel:  σ=0.04  m/s²  → σ²=1.6e-3
+        self._orient_cov = [0.01, 0.0, 0.0,  0.0, 0.01,  0.0, 0.0, 0.0, 0.1]
+        self._gyro_cov   = [4e-6, 0.0, 0.0,  0.0,  4e-6, 0.0, 0.0, 0.0, 4e-6]
+        self._accel_cov  = [1.6e-3, 0.0, 0.0, 0.0, 1.6e-3, 0.0, 0.0, 0.0, 1.6e-3]
 
         # Publishers — standard topics for SLAM/Nav2
         self.tf_pub = self.create_publisher(TFMessage, "/tf", dynamic_qos)

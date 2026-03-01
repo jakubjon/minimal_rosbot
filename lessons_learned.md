@@ -6,7 +6,7 @@ Problems encountered and resolved while developing the autonomous exploration sy
 
 **Problem**: `rf2o_laser_odometry` produced noisy TF at sim startup and would drift in featureless areas, causing SLAM to accumulate error and Nav2 to plan into walls.
 
-**Solution**: Switched to Gazebo's wheel odometry (`odom_source:=wheel`) for simulation. rf2o remains available for real hardware where wheel odometry is unreliable. The `minidog_scan_odom` node republishes Gazebo GT odom with correct TF frames.
+**Solution**: Implemented `odom_stabilizer` to republish RF2O output at a stable 20Hz with staleness detection, and added `scan_safety_filter` to drop zero-increment scans that caused RF2O div-by-zero. RF2O is the default odom source for both sim and bag. The `minidog_scan_odom` package (Gazebo GT odom republisher) was removed as it was only relevant to simulation and is superseded by the RF2O+EKF pipeline.
 
 ## 2. ActionClient.wait_for_server blocks DDS discovery
 
@@ -186,3 +186,36 @@ Problems encountered and resolved while developing the autonomous exploration sy
 **Problem**: The `_tick()` method called `_find_frontier_clusters()` (which calls `list(self.map.data)`) and then `_pick_goal()` called it again. Each call involved a full O(width × height) scan of the occupancy grid and BFS clustering. This doubled the CPU cost per tick.
 
 **Solution**: Compute `tick_data = list(self.map.data)` and `tick_clusters = _find_frontier_clusters(tick_data)` once at the top of `_tick()`, then pass both as arguments to `_publish_status()` and `_pick_goal()`. Single allocation, single scan, shared across all functions.
+
+## 30. Gazebo Fortress IMU sensor requires dedicated world plugin
+
+**Problem**: Added an IMU sensor to `model.sdf` and a bridge entry for `/diffbot/imu`, but the topic never appeared in `ign topic -l`. The sensor was silently ignored.
+
+**Solution**: In Gazebo Fortress (Ignition 6), IMU sensors require the `ignition-gazebo-imu-system` plugin to be loaded in the **world** SDF — not the model. The `ignition-gazebo-sensors-system` plugin (which activates lidar/camera) does NOT cover IMU. Add to `minidog_world.sdf`:
+```xml
+<plugin filename="ignition-gazebo-imu-system" name="gz::sim::systems::Imu"/>
+```
+After adding this, `/diffbot/imu` appeared and published at the configured 100Hz.
+
+## 31. ros_gz_bridge sets wrong IMU frame_id from Gazebo scoped name
+
+**Problem**: After the IMU sensor published and the bridge relayed it to `/imu/data`, the EKF logged transform lookup failures. The message showed `frame_id: diffbot/base_link/imu_sensor` — Gazebo's internal scoped sensor name — instead of `base_link`. The EKF could not find this frame in the TF tree.
+
+**Solution**: The bridge has no built-in option to override the frame_id for IMU messages. Added `imu_fixup.py` as a thin relay node: subscribes to `/imu/bridge_raw` (bridge output), sets `frame_id = 'base_link'`, injects σ² covariances (also zero from the bridge), and republishes to `/imu/data`. Same pattern as `data_relay.py` does for bag mode.
+
+## 32. IMU covariance values must be variances (σ²), not standard deviations (σ)
+
+**Problem**: `data_relay.py` used gyro stddev (0.002 rad/s) directly as the covariance value. `robot_localization` EKF interprets covariance fields as σ², so it received 0.002 rad²/s² instead of 4e-6 rad²/s² — a factor of 500× too large. This made the EKF treat the IMU as 500× noisier than it actually is, nearly ignoring the gyro.
+
+**Solution**: Corrected all covariance values to σ²: gyro `0.002² = 4e-6`, accel `0.04² = 1.6e-3`. Orientation covariances (`0.01`, `0.1`) were already correct (they represent σ² for σ=0.1 rad and σ=0.316 rad). Both `imu_fixup.py` and `data_relay.py` now use identical σ² values for consistent EKF weighting across sim and bag modes.
+
+## 33. PythonExpression in ROS 2 launch yields string, not bool
+
+**Problem**: `odom_stabilizer` was declared with `publish_tf` as a bool parameter (default `True`). When set via `PythonExpression(["'false' if '", enable_ekf, "' == 'true' else 'true'"])` in the launch file, the node received the string `'false'`. In Python, any non-empty string is truthy, so `self.publish_tf = self.declare_parameter('publish_tf', True).value` evaluated to `True` — stabilizer published TF even when EKF was enabled, causing a TF conflict.
+
+**Solution**: In `odom_stabilizer.py`, read the raw parameter value and handle both types:
+```python
+_raw_tf = self.declare_parameter('publish_tf', True).value
+self.publish_tf = _raw_tf if isinstance(_raw_tf, bool) else str(_raw_tf).lower() == 'true'
+```
+This correctly converts string `'false'` → `False` and string `'true'` → `True`.
